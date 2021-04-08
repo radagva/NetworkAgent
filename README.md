@@ -5,3 +5,84 @@
 </p>
 
 A description of this package.
+
+## Example
+
+Api.swift
+```Swift
+enum Api {
+    case login(email: String, password: String)
+    case books(query: [String: Any])
+    case book(id: Int)
+}
+
+extension Api: NetworkAgentEndpoint {
+    var baseURL: URL {
+        return URL(string: "https://some_url.com/api")!
+    }
+    
+    var path: String {
+        switch self {
+        case ,login: return "/login"
+        case .books: return "/books"
+        case let .book(id): return "/books/\(id)"
+        }
+    }
+    
+    var method: HTTPMethod {
+        return .get
+    }
+    
+    var task: HTTPTask {
+        switch self {
+            case let .login(email, password): return .requestAttributes(attributes: ["email:" email, "password": password], encoding: .json)
+            case let .books(query): return .requestAttributes(attributes: query, encoding: .url)
+            case .book: return .requestPlain
+        }
+    }
+}
+```
+
+
+Repository.swift
+```Swift
+class Repository {
+
+    typealias Callback<T> = (T) -> ()
+    static let shared: Repository = Repository()
+    private let provider: NetworkAgentProvider<Api> = .init(plugins: [])
+    
+    func login(email: String, password: String) -> <Session, Error> {
+        return provider.request(.login(email: email, password: password))
+    }
+    
+    func books(query: [String: Any]) -> <[Book], Error> {
+        return provider.request(.books(query: query))
+    }
+    
+    func book(id: int) -> <Book, Error> {
+        return provider.request(.book(id: id))
+    }
+}
+```
+
+LoginViewModel.swift
+```Swift
+import Foundation
+import Combine
+
+class LoginViewModel: ObservableObject {
+    
+    @Published var email: String = ""
+    @Published var password: String = ""
+    private var cancellable: Set<AnyCancellable> = .init()
+    private var repository = Repository.shared
+    
+    func login(completion: @escaping Callback<Session>) {
+        self.isLoading = true
+        repository.login(email: email, password: password)
+            .sink(onSuccess: completion)
+            .store(in: &cancellable)
+    }
+}
+```
