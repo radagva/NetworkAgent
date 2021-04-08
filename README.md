@@ -26,7 +26,7 @@ extension Api: NetworkAgentEndpoint {
     
     var path: String {
         switch self {
-        case ,login: return "/login"
+        case .login: return "/login"
         case .books: return "/books"
         case let .book(id): return "/books/\(id)"
         }
