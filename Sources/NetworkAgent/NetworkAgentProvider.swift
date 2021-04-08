@@ -7,7 +7,10 @@
 
 import Foundation
 import Combine
+
+#if !os(macOS)
 import UIKit
+#endif
 
 //"yyyy-MM-dd'T'HH:mm:ss.SSSZ" // New laravel format
 public struct RequestConfiguration {
