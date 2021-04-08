@@ -90,3 +90,16 @@ class LoginViewModel: ObservableObject {
     }
 }
 ```
+
+# Plugins
+
+To make a custom plugin is as easy to implement the protocol `NetworkAgentPlugin`
+every function of the protocol is optional. 
+
+```
+public protocol NetworkAgentPlugin {
+    func onRequest(_ request: URLRequest, with configuration: RequestConfiguration)
+    func onResponse(_ response: HTTPURLResponse, with payload: Data)
+    func onResponse(_ response: HTTPURLResponse?, with payload: Data?, receiving error: NetworkAgent.NetworkError, from endpoint: NetworkAgentEndpoint)
+}
+```
