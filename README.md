@@ -10,6 +10,8 @@ A description of this package.
 
 Api.swift
 ```Swift
+import NetworkAgent
+
 enum Api {
     case login(email: String, password: String)
     case books(query: [String: Any])
@@ -43,9 +45,10 @@ extension Api: NetworkAgentEndpoint {
 }
 ```
 
-
 Repository.swift
 ```Swift
+import NetworkAgent
+
 class Repository {
 
     typealias Callback<T> = (T) -> ()
