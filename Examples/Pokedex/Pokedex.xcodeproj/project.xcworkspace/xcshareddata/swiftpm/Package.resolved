@@ -1,0 +1,16 @@
+{
+  "object": {
+    "pins": [
+      {
+        "package": "NetworkAgent",
+        "repositoryURL": "https://github.com/Gengart/NetworkAgent.git",
+        "state": {
+          "branch": null,
+          "revision": "d5df82bab3569f07b8ea624de98b60ff7bd774c6",
+          "version": "1.0.0"
+        }
+      }
+    ]
+  },
+  "version": 1
+}
