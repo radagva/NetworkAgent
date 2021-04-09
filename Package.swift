@@ -25,7 +25,7 @@ let package = Package(
         .target(
             name: "NetworkAgent",
             dependencies: [],
-            exclude: ["README.md"]),
+            exclude: ["README.md", "LICENCE", "Examples"]),
         .testTarget(
             name: "NetworkAgentTests",
             dependencies: ["NetworkAgent"]),
