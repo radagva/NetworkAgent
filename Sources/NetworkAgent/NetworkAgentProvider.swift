@@ -41,7 +41,23 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
     }
     
     public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) -> AnyPublisher<T, Error> {
+        let (request, conf) = build(endpoint: endpoint, config: config)
+        
+        plugins.forEach { $0.onRequest(request, with: conf) }
+        
+        return run(request, config: conf, plugins: plugins, from: endpoint)
+    }
+    
+    public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) async throws -> T {
          
+        let (request, conf) = build(endpoint: endpoint, config: config)
+        
+        plugins.forEach { $0.onRequest(request, with: conf) }
+        
+        return try await run(request, config: conf, plugins: plugins, from: endpoint)
+    }
+    
+    private func build(endpoint: E, config: RequestConfiguration? = nil) -> (URLRequest, RequestConfiguration) {
         let conf = config ?? self.configuration ?? .init()
         
         let boundary = "Boundary-\(UUID().uuidString)"
@@ -89,17 +105,52 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
             request.httpBody = body as Data
         }
         
-        plugins.forEach { $0.onRequest(request, with: conf) }
-        
-        return run(request, config: conf, plugins: plugins, from: endpoint)
+        return (request, conf)
     }
     
     /// ENDPOINT EXECUTER, THE GENERIC PARSES THE ENDPOINT RESPONSE TO THE REQUIRED DATA Codable MODEL
-    private func run<T: Decodable>(_ request: URLRequest, config: RequestConfiguration, plugins: [NetworkAgentPlugin], from endpoint: NetworkAgentEndpoint) -> AnyPublisher<T, Error> {
+    private func run<T: Decodable>(
+        _ request: URLRequest,
+        config: RequestConfiguration,
+        plugins: [NetworkAgentPlugin],
+        from endpoint: NetworkAgentEndpoint
+    ) -> AnyPublisher<T, Error> {
         
-        return agent.run(request, config.decoder, from: config.from, dateFormat: config.dateFormat, timeZone: config.timeZone, plugins: plugins, from: endpoint)
-            .map(\.value)
-            .eraseToAnyPublisher()
+        agent.run(
+            request,
+            config.decoder,
+            from: config.from,
+            dateFormat: config.dateFormat,
+            timeZone: config.timeZone,
+            plugins: plugins,
+            from: endpoint
+        )
+        .map(\.value)
+        .eraseToAnyPublisher()
+    }
+    
+    private func run<T: Decodable>(
+        _ request: URLRequest,
+        config: RequestConfiguration,
+        plugins: [NetworkAgentPlugin],
+        from endpoint: NetworkAgentEndpoint
+    ) async throws -> T {
+        do {
+            let result = try await agent.run(
+                request,
+                config.decoder,
+                from: config.from,
+                dateFormat: config.dateFormat,
+                timeZone: config.timeZone,
+                plugins: plugins,
+                from: endpoint,
+                for: T.self
+            )
+            
+            return result.value
+        } catch {
+            throw error
+        }
     }
     
     private func makeUploadBoundaryField(name: String, value: Data, using boundary: String) -> String {

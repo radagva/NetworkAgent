@@ -29,7 +29,15 @@ public struct NetworkAgent {
         case none
     }
     
-    func run<T: Decodable>(_ request: URLRequest, _ decoder: JSONDecoder = JSONDecoder(), from keyPath: String, dateFormat format: String, timeZone abbreviation: String, plugins: [NetworkAgentPlugin], from endpoint: NetworkAgentEndpoint) -> AnyPublisher<Response<T>, Error> {
+    func run<T: Decodable>(
+        _ request: URLRequest,
+        _ decoder: JSONDecoder = JSONDecoder(),
+        from keyPath: String,
+        dateFormat format: String,
+        timeZone abbreviation: String,
+        plugins: [NetworkAgentPlugin],
+        from endpoint: NetworkAgentEndpoint
+    ) -> AnyPublisher<Response<T>, Error> {
         return URLSession.shared
             .dataTaskPublisher(for: request)
             .mapError { error -> URLError in
@@ -106,6 +114,71 @@ public struct NetworkAgent {
             }
             .receive(on: DispatchQueue.main)
             .eraseToAnyPublisher()
+    }
+    
+    func run<T: Decodable>(
+        _ request: URLRequest,
+        _ decoder: JSONDecoder = JSONDecoder(),
+        from keyPath: String,
+        dateFormat format: String,
+        timeZone abbreviation: String,
+        plugins: [NetworkAgentPlugin],
+        from endpoint: NetworkAgentEndpoint,
+        for model: T.Type
+    ) async throws -> Response<T> {
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let result = response as! HTTPURLResponse
+            
+            let decoder = JSONDecoder()
+            
+            if 200...500 ~= result.statusCode {
+                do {
+                    let decoded = try decoder.decode(T.self, from: data)
+                    
+                    return .init(value: decoded, response: result)
+                } catch {
+                    if error is DecodingError {
+                        plugins.forEach { $0.onResponse((result), with: data, receiving: .decodingError(error: error as! DecodingError), from: endpoint) }
+                    } else {
+                        plugins.forEach { $0.onResponse((result), with: data, receiving: .unknown(error: error), from: endpoint) }
+                    }
+
+                    throw error
+                }
+            }
+            
+            if 300...399 ~= result.statusCode {
+                plugins.forEach { $0.onResponse(result, with: data, receiving: .redirect(code: result.statusCode), from: endpoint) }
+                throw NetworkError.redirect(code: result.statusCode)
+            }
+
+            if 400...499 ~= result.statusCode && result.statusCode != 422 {
+                plugins.forEach { $0.onResponse(result, with: data, receiving: .notFound(code: result.statusCode), from: endpoint) }
+                throw NetworkError.notFound(code: result.statusCode)
+            }
+
+            if result.statusCode == 422 {
+                let string = String(data: data, encoding: .utf8)
+                plugins.forEach { $0.onResponse(result, with: data, receiving: .unprocesableEntity(code: result.statusCode, description: string ?? ""), from: endpoint) }
+                throw NetworkError.unprocesableEntity(code: result.statusCode, description: string ?? "")
+            }
+
+            if 500...599 ~= result.statusCode {
+                plugins.forEach { $0.onResponse(result, with: data, receiving: .internalServerError(code: result.statusCode, description: ""), from: endpoint) }
+                throw NetworkError.internalServerError(code: result.statusCode, description: "")
+            }
+
+            if result.statusCode == -1001 {
+                plugins.forEach { $0.onResponse(result, with: data, receiving: .timeOut(code: result.statusCode), from: endpoint) }
+                throw NetworkError.timeOut(code: result.statusCode)
+            }
+
+            throw NetworkError.unknown(error: NetworkError.none)
+        } catch {
+            throw error
+        }
     }
 }
 
