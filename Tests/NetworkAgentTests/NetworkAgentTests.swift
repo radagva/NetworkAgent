@@ -65,13 +65,20 @@ final class NetworkAgentTests: XCTestCase {
         XCTAssertNotNil(post)
     }
     
-    func test_IDontKnowWhatWillHappen() async throws {
+    // if jsonplaceholder cant find a post, returns an empty object
+    // an empty object just throw DecodingError.keyNotFound
+    func test_ExceptionHandlesInvalidResponse() async throws {
         
         var post: Post? = nil
         
         do {
             post = try await fetchPost(with: 0)
         } catch {
+            // the first field it will try to decode should be userId
+            // as is the firt field declared in Post model
+            if case let .keyNotFound(key, _) = error as? DecodingError {
+                XCTAssertEqual(key.stringValue, "userId")
+            }
             XCTAssertNotNil(error)
         }
         

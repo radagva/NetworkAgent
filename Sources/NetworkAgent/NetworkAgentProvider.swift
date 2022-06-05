@@ -35,25 +35,28 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
         self.configuration = configuration
     }
     
+    // MARK: Combine handler to perform requests
     public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) -> AnyPublisher<T, Error> {
-        let (request, conf) = build(endpoint: endpoint, config: config)
+        let (request, configuration) = configure(endpoint: endpoint, config: config)
         
-        plugins.forEach { $0.onRequest(request, with: conf) }
+        plugins.forEach { $0.onRequest(request, with: configuration) }
         
-        return run(request, config: conf, plugins: plugins, from: endpoint)
+        return run(request, config: configuration, plugins: plugins, from: endpoint)
     }
     
+    // MARK: Async/Await handler to perform requests
     public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) async throws -> T {
          
-        let (request, conf) = build(endpoint: endpoint, config: config)
+        let (request, configuration) = configure(endpoint: endpoint, config: config)
         
-        plugins.forEach { $0.onRequest(request, with: conf) }
+        plugins.forEach { $0.onRequest(request, with: configuration) }
         
-        return try await run(request, config: conf, plugins: plugins, from: endpoint)
+        return try await run(request, config: configuration, plugins: plugins, from: endpoint)
     }
     
-    private func build(endpoint: E, config: RequestConfiguration? = nil) -> (URLRequest, RequestConfiguration) {
-        let conf = config ?? self.configuration ?? .init()
+    // MARK: Build Request object
+    private func configure(endpoint: E, config: RequestConfiguration? = nil) -> (URLRequest, RequestConfiguration) {
+        let configuration = config ?? self.configuration ?? .init()
         
         let boundary = "Boundary-\(UUID().uuidString)"
         
@@ -61,12 +64,13 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
         var request = URLRequest(url: endpoint.baseURL.appendingPathComponent(endpoint.path))
         
         /// HTTP HEADERS CONFIGURATION [String: String]
-        endpoint.headers.forEach({ (key, value) in
-            var val = value
+        endpoint.headers.forEach({
+            var value = $0.value
             if case .upload = endpoint.task {
-                val = "\(value); boundary=\(boundary)"
+                value = "\($0.value); boundary=\(boundary)"
             }
-            request.addValue(val, forHTTPHeaderField: key)
+    
+            request.addValue(value, forHTTPHeaderField: $0.key)
         })
         
         /// HTTP METHOD CONFIGURATION <GET, POST, PUT, PATCH, DELETE>
@@ -100,9 +104,10 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
             request.httpBody = body as Data
         }
         
-        return (request, conf)
+        return (request, configuration)
     }
     
+    // MARK: Combine handler
     /// ENDPOINT EXECUTER, THE GENERIC PARSES THE ENDPOINT RESPONSE TO THE REQUIRED DATA Codable MODEL
     private func run<T: Decodable>(
         _ request: URLRequest,
@@ -124,6 +129,8 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
         .eraseToAnyPublisher()
     }
     
+    // MARK: Async/Await handler
+    /// ENDPOINT EXECUTER, THE GENERIC PARSES THE ENDPOINT RESPONSE TO THE REQUIRED DATA Codable MODEL
     private func run<T: Decodable>(
         _ request: URLRequest,
         config: RequestConfiguration,
