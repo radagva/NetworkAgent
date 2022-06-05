@@ -19,7 +19,7 @@ public struct NetworkAgent {
         case unableToMap
         case internalServerError(code: Int, description: String) // 500...599
         case notFound(code: Int) // 404
-        case unprocesableEntity(code: Int, description: String)
+        case unprocesableEntity(code: Int, description: String) // 422
         case redirect(code: Int) // 300...399
         case unknown(error: Error)
         case urlError(error: URLError)
