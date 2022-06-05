@@ -116,6 +116,7 @@ public struct NetworkAgent {
             .eraseToAnyPublisher()
     }
     
+    @available(macOS 12, *) @available(iOS 15, *)
     func run<T: Decodable>(
         _ request: URLRequest,
         _ decoder: JSONDecoder = JSONDecoder(),

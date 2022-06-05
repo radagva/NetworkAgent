@@ -45,6 +45,7 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
     }
     
     // MARK: Async/Await handler to perform requests
+    @available(macOS 12, *) @available(iOS 15, *)
     public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) async throws -> T {
          
         let (request, configuration) = configure(endpoint: endpoint, config: config)
@@ -131,6 +132,7 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
     
     // MARK: Async/Await handler
     /// ENDPOINT EXECUTER, THE GENERIC PARSES THE ENDPOINT RESPONSE TO THE REQUIRED DATA Codable MODEL
+    @available(macOS 12, *) @available(iOS 15, *)
     private func run<T: Decodable>(
         _ request: URLRequest,
         config: RequestConfiguration,

@@ -54,11 +54,13 @@ final class NetworkAgentTests: XCTestCase {
         provider = nil
     }
     
+    @available(macOS 12, *) @available(iOS 15, *)
     func test_CanRunAnAsyncHTTPRequest() async throws {
         let posts = try await provider.request(endpoint: .posts) as [Post]
         XCTAssertNotNil(posts)
     }
     
+    @available(macOS 12, *) @available(iOS 15, *)
     func test_CanGetSinglePostById() async throws {
         let post = try await fetchPost(with: 1)
         
@@ -67,6 +69,7 @@ final class NetworkAgentTests: XCTestCase {
     
     // if jsonplaceholder cant find a post, returns an empty object
     // an empty object just throw DecodingError.keyNotFound
+    @available(macOS 12, *) @available(iOS 15, *)
     func test_ExceptionHandlesInvalidResponse() async throws {
         
         var post: Post? = nil
@@ -86,6 +89,7 @@ final class NetworkAgentTests: XCTestCase {
     }
     
     @discardableResult
+    @available(macOS 12, *) @available(iOS 15, *)
     private func fetchPost(with id: Int) async throws -> Post {
         do {
              return try await provider.request(endpoint: .post(id: id)) as Post
