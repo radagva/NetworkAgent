@@ -5,7 +5,7 @@
 </p>
 
 This package is meant to make http request of an easy way inspiren in the architecture of Moya package.
-This package is 100% free of dependencies and works with Combine api + Codable
+This package is 100% free of dependencies and works with Combine api + Codable and Async/Await
 
 ## Example
 
