@@ -8,8 +8,8 @@
 import Foundation
 
 public enum HTTPTask {
-    case requestPlain
-    case requestAttributes(attributes: [String: Any], encoding: HTTPURLEncoding)
-    case requestWithoutAttributes(content: Any)
+    case plain
+    case attributes(attributes: [String: Any], encoding: HTTPURLEncoding)
+    case raw(content: Any)
     case upload(parts: [HTTPMultipartTask])
 }

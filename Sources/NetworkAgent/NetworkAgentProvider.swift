@@ -78,7 +78,7 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
         request.httpMethod = endpoint.method.rawValue.uppercased()
         
         /// HTTP BODY CONFIGURATION [String: Any] <- Data
-        if case let .requestAttributes(attributes, encoding) = endpoint.task {
+        if case let .attributes(attributes, encoding) = endpoint.task {
             
             switch encoding {
             case .json:

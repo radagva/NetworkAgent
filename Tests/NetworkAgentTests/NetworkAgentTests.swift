@@ -37,7 +37,7 @@ extension Api: NetworkAgentEndpoint {
     var task: HTTPTask {
         switch self {
         case .posts, .post:
-            return .requestPlain
+            return .plain
         }
     }
 }
