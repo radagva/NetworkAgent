@@ -132,8 +132,6 @@ public struct NetworkAgent {
             let (data, response) = try await URLSession.shared.data(for: request)
             let result = response as! HTTPURLResponse
             
-            let decoder = JSONDecoder()
-            
             if 200...500 ~= result.statusCode {
                 do {
                     let decoded = try decoder.decode(T.self, from: data)
