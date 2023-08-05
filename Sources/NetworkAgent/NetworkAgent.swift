@@ -129,6 +129,7 @@ public struct NetworkAgent {
     ) async throws -> Response<T> {
         
         do {
+
             let (data, response) = try await URLSession.shared.data(for: request)
             let result = response as! HTTPURLResponse
             
