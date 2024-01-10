@@ -26,37 +26,17 @@ public struct RequestConfiguration {
 
 public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
     
-    private let agent: NetworkAgent = .init()
-    private var plugins: [NetworkAgentPlugin] = []
-    private var configuration: RequestConfiguration?
+    internal let agent: NetworkAgent = .init()
+    internal var configuration: RequestConfiguration?
+    internal var plugins: [NetworkAgentPlugin]
     
     public init(plugins: [NetworkAgentPlugin] = [], configuration: RequestConfiguration = .init()) {
         self.plugins = plugins
         self.configuration = configuration
     }
     
-    // MARK: Combine handler to perform requests
-    public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) -> AnyPublisher<T, Error> {
-        let (request, configuration) = configure(endpoint: endpoint, config: config)
-        
-        plugins.forEach { $0.onRequest(request, with: configuration) }
-        
-        return run(request, config: configuration, plugins: plugins, from: endpoint)
-    }
-    
-    // MARK: Async/Await handler to perform requests
-    @available(macOS 12, *) @available(iOS 15, *)
-    public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) async throws -> T {
-         
-        let (request, configuration) = configure(endpoint: endpoint, config: config)
-        
-        plugins.forEach { $0.onRequest(request, with: configuration) }
-        
-        return try await run(request, config: configuration, plugins: plugins, from: endpoint)
-    }
-    
     // MARK: Build Request object
-    private func configure(endpoint: E, config: RequestConfiguration? = nil) -> (URLRequest, RequestConfiguration) {
+    internal func configure(endpoint: E, config: RequestConfiguration? = nil) -> (URLRequest, RequestConfiguration) {
         let configuration = config ?? self.configuration ?? .init()
         
         let boundary = "Boundary-\(UUID().uuidString)"
@@ -105,56 +85,9 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
             request.httpBody = body as Data
         }
         
-        return (request, configuration)
-    }
-    
-    // MARK: Combine handler
-    /// ENDPOINT EXECUTER, THE GENERIC PARSES THE ENDPOINT RESPONSE TO THE REQUIRED DATA Codable MODEL
-    private func run<T: Decodable>(
-        _ request: URLRequest,
-        config: RequestConfiguration,
-        plugins: [NetworkAgentPlugin],
-        from endpoint: NetworkAgentEndpoint
-    ) -> AnyPublisher<T, Error> {
+        plugins.forEach { $0.onRequest(&request) }
         
-        agent.run(
-            request,
-            config.decoder,
-            from: config.from,
-            dateFormat: config.dateFormat,
-            timeZone: config.timeZone,
-            plugins: plugins,
-            from: endpoint
-        )
-        .map(\.value)
-        .eraseToAnyPublisher()
-    }
-    
-    // MARK: Async/Await handler
-    /// ENDPOINT EXECUTER, THE GENERIC PARSES THE ENDPOINT RESPONSE TO THE REQUIRED DATA Codable MODEL
-    @available(macOS 12, *) @available(iOS 15, *)
-    private func run<T: Decodable>(
-        _ request: URLRequest,
-        config: RequestConfiguration,
-        plugins: [NetworkAgentPlugin],
-        from endpoint: NetworkAgentEndpoint
-    ) async throws -> T {
-        do {
-            let result = try await agent.run(
-                request,
-                config.decoder,
-                from: config.from,
-                dateFormat: config.dateFormat,
-                timeZone: config.timeZone,
-                plugins: plugins,
-                from: endpoint,
-                for: T.self
-            )
-            
-            return result.value
-        } catch {
-            throw error
-        }
+        return (request, configuration)
     }
     
     private func makeUploadBoundaryField(name: String, value: Data, using boundary: String) -> String {

@@ -10,6 +10,7 @@ struct Post: Codable {
 
 enum Api {
     case posts
+    case badPosts
     case post(id: Int)
 }
 
@@ -22,6 +23,8 @@ extension Api: NetworkAgentEndpoint {
         switch self {
         case .posts:
             return "/posts"
+        case .badPosts:
+            return "/postsy"
         case .post(let id):
             return "/posts/\(id)"
         }
@@ -29,14 +32,14 @@ extension Api: NetworkAgentEndpoint {
     
     var method: HTTPMethod {
         switch self {
-        case .posts, .post:
+        case .posts, .post, .badPosts:
             return .get
         }
     }
     
     var task: HTTPTask {
         switch self {
-        case .posts, .post:
+        case .posts, .post, .badPosts:
             return .requestPlain
         }
     }
@@ -47,7 +50,7 @@ final class NetworkAgentTests: XCTestCase {
     var provider: NetworkAgentProvider<Api>!
     
     override func setUpWithError() throws {
-        provider = .init()
+        provider = .init(plugins: [NetworkLogger()])
     }
     
     override func tearDownWithError() throws {
@@ -56,8 +59,44 @@ final class NetworkAgentTests: XCTestCase {
     
     @available(macOS 12, *) @available(iOS 15, *)
     func test_CanRunAnAsyncHTTPRequest() async throws {
-        let posts = try await provider.request(endpoint: .posts) as [Post]
+        
+        var posts: [Post]?
+        
+        do {
+            posts = try await provider.request(endpoint: .posts)
+        } catch {
+            print(error)
+        }
+
         XCTAssertNotNil(posts)
+    }
+    
+    @available(macOS 12, *) @available(iOS 15, *)
+    func test_CanCatchErrorCodesExceptions() async throws {
+        
+        var posts: [Post]?
+        
+        do {
+            posts = try await provider.request(endpoint: .badPosts)
+        } catch let error as HTTPError {
+            if case let .badRequest(response, _) = error{
+                XCTAssertTrue(response.statusCode == 404)
+            }
+        }
+        
+        XCTAssertNil(posts)
+    }
+    
+    @available(macOS 12, *) @available(iOS 15, *)
+    func test_CanCatchConectivityError() async throws {
+        do {
+            let posts: [Post] = try await provider.request(endpoint: .posts)
+            XCTAssertNotNil(posts)
+        } catch let error as URLError {
+            if case .notConnectedToInternet = error.code {
+                XCTAssertTrue(error.code == .notConnectedToInternet)
+            }
+        }
     }
     
     @available(macOS 12, *) @available(iOS 15, *)

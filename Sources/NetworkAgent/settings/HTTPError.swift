@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum HTTPError: Error {
+public enum HTTPError: Error {
     
     enum ErrorCodeType {
         case redirect

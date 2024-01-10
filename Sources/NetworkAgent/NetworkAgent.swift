@@ -15,170 +15,55 @@ public struct NetworkAgent {
         let response: HTTPURLResponse
     }
     
-    public enum NetworkError: Error {
-        case unableToMap
-        case internalServerError(code: Int, description: String) // 500...599
-        case notFound(code: Int) // 404
-        case unprocesableEntity(code: Int, description: String) // 422
-        case redirect(code: Int) // 300...399
-        case unknown(error: Error)
-        case urlError(error: URLError)
-        case errorDecoding(key: String)
-        case decodingError(error: DecodingError)
-        case timeOut(code: Int)
-        case none
-    }
-    
-    func run<T: Decodable>(
-        _ request: URLRequest,
-        _ decoder: JSONDecoder = JSONDecoder(),
-        from keyPath: String,
-        dateFormat format: String,
-        timeZone abbreviation: String,
-        plugins: [NetworkAgentPlugin],
-        from endpoint: NetworkAgentEndpoint
-    ) -> AnyPublisher<Response<T>, Error> {
-        return URLSession.shared
-            .dataTaskPublisher(for: request)
-            .mapError { error -> URLError in
-                plugins.forEach { $0.onResponse(nil, with: nil, receiving: .urlError(error: error), from: endpoint) }
-                return error
+    internal func prepareResponse<T: Decodable>(request: URLRequest, response: HTTPURLResponse, data: Data, keyPath: String, decoder: JSONDecoder, plugins: [NetworkAgentPlugin] = []) throws -> Response<T> {
+        if 200...299 ~= response.statusCode {
+            let serialized = try JSONSerialization.jsonObject(with: data, options: .mutableLeaves)
+
+            if let dict = serialized as? [String: Any], !keyPath.isEmpty {
+                return try drilldown(dict, keyPath: keyPath, decoder: decoder, response: response)
             }
-            .tryMap { data, result -> Response<T> in
-                
-                let result = result as! HTTPURLResponse
-                
-                if 200...500 ~= result.statusCode {
-                    
-                    if 200...299 ~= result.statusCode {
-                        decoder.keyDecodingStrategy = .convertFromSnakeCase
-                        let formatter = DateFormatter()
-                        formatter.timeZone = TimeZone(abbreviation: abbreviation)
-                        formatter.dateFormat = format
-                        decoder.dateDecodingStrategy = .formatted(formatter)
-                        
-                        do {
-                            var _data = try JSONSerialization.jsonObject(with: data, options: .mutableLeaves)
-                            if let new = _data as? [String: Any], !keyPath.isEmpty {
-                                _data = new[keyPath] ?? [:]
-                                
-                                _data = try JSONSerialization.data(withJSONObject: _data, options: .prettyPrinted)
-                                
-                                if let payload = _data as? Data {
-                                    let value = try decoder.decode(T.self, from: payload)
-                                    plugins.forEach { $0.onResponse(result, with: payload) }
-                                    return Response(value: value, response: result)
-                                }
-                            }
-                            
-                            let value = try decoder.decode(T.self, from: data)
-                            plugins.forEach { $0.onResponse(result, with: data) }
-                            return Response(value: value, response: result)
-                        } catch let error {
-                            if error is DecodingError {
-                                plugins.forEach { $0.onResponse(result, with: data, receiving: .decodingError(error: error as! DecodingError), from: endpoint) }
-                            } else {
-                                plugins.forEach { $0.onResponse(result, with: data, receiving: .unknown(error: error), from: endpoint) }
-                            }
-                        }
-                    }
-                    
-                    if 300...399 ~= result.statusCode {
-                        plugins.forEach { $0.onResponse(result, with: data, receiving: .redirect(code: result.statusCode), from: endpoint) }
-                        throw NetworkError.redirect(code: result.statusCode)
-                    }
-                    
-                    if 400...499 ~= result.statusCode && result.statusCode != 422 {
-                        plugins.forEach { $0.onResponse(result, with: data, receiving: .notFound(code: result.statusCode), from: endpoint) }
-                        throw NetworkError.notFound(code: result.statusCode)
-                    }
-                    
-                    if result.statusCode == 422 {
-                        let string = String(data: data, encoding: .utf8)
-                        plugins.forEach { $0.onResponse(result, with: data, receiving: .unprocesableEntity(code: result.statusCode, description: string ?? ""), from: endpoint) }
-                        throw NetworkError.unprocesableEntity(code: result.statusCode, description: string ?? "")
-                    }
-                    
-                    if 500...599 ~= result.statusCode {
-                        plugins.forEach { $0.onResponse(result, with: data, receiving: .internalServerError(code: result.statusCode, description: ""), from: endpoint) }
-                        throw NetworkError.internalServerError(code: result.statusCode, description: "")
-                    }
-                    
-                    if result.statusCode == -1001 {
-                        plugins.forEach { $0.onResponse(result, with: data, receiving: .timeOut(code: result.statusCode), from: endpoint) }
-                        throw NetworkError.timeOut(code: result.statusCode)
-                    }
-                }
-                
-                throw NetworkError.unknown(error: NetworkError.none)
-            }
-            .receive(on: DispatchQueue.main)
-            .eraseToAnyPublisher()
-    }
-    
-    @available(macOS 12, *) @available(iOS 15, *)
-    func run<T: Decodable>(
-        _ request: URLRequest,
-        _ decoder: JSONDecoder = JSONDecoder(),
-        from keyPath: String,
-        dateFormat format: String,
-        timeZone abbreviation: String,
-        plugins: [NetworkAgentPlugin],
-        from endpoint: NetworkAgentEndpoint,
-        for model: T.Type
-    ) async throws -> Response<T> {
+            
+            plugins.forEach { $0.onResponse(response, receiving: data, from: request) }
+            
+            let decoded = try decoder.decode(T.self, from: data)
+            return .init(value: decoded, response: response)
+        }
         
-        do {
-
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let result = response as! HTTPURLResponse
-            
-            if 200...500 ~= result.statusCode {
-                do {
-                    let decoded = try decoder.decode(T.self, from: data)
-                    
-                    return .init(value: decoded, response: result)
-                } catch {
-                    if error is DecodingError {
-                        plugins.forEach { $0.onResponse((result), with: data, receiving: .decodingError(error: error as! DecodingError), from: endpoint) }
-                    } else {
-                        plugins.forEach { $0.onResponse((result), with: data, receiving: .unknown(error: error), from: endpoint) }
-                    }
-
-                    throw error
-                }
-            }
-            
-            if 300...399 ~= result.statusCode {
-                plugins.forEach { $0.onResponse(result, with: data, receiving: .redirect(code: result.statusCode), from: endpoint) }
-                throw NetworkError.redirect(code: result.statusCode)
-            }
-
-            if 400...499 ~= result.statusCode && result.statusCode != 422 {
-                plugins.forEach { $0.onResponse(result, with: data, receiving: .notFound(code: result.statusCode), from: endpoint) }
-                throw NetworkError.notFound(code: result.statusCode)
-            }
-
-            if result.statusCode == 422 {
-                let string = String(data: data, encoding: .utf8)
-                plugins.forEach { $0.onResponse(result, with: data, receiving: .unprocesableEntity(code: result.statusCode, description: string ?? ""), from: endpoint) }
-                throw NetworkError.unprocesableEntity(code: result.statusCode, description: string ?? "")
-            }
-
-            if 500...599 ~= result.statusCode {
-                plugins.forEach { $0.onResponse(result, with: data, receiving: .internalServerError(code: result.statusCode, description: ""), from: endpoint) }
-                throw NetworkError.internalServerError(code: result.statusCode, description: "")
-            }
-
-            if result.statusCode == -1001 {
-                plugins.forEach { $0.onResponse(result, with: data, receiving: .timeOut(code: result.statusCode), from: endpoint) }
-                throw NetworkError.timeOut(code: result.statusCode)
-            }
-
-            throw NetworkError.unknown(error: NetworkError.none)
-        } catch {
+        var error: HTTPError?
+        
+        
+        if 300...399 ~= response.statusCode {
+            error =  HTTPError.redirect(response, data: data)
+        }
+        
+        if 400...499 ~= response.statusCode {
+            error = HTTPError.badRequest(response, data: data)
+        }
+        
+        if 500...599 ~= response.statusCode {
+            error = HTTPError.internalServerError(response, data: data)
+        }
+        
+        if let error {
+            plugins.forEach { $0.onResponseError(error, having: response, from: request) }
             throw error
         }
+        
+        fatalError("Could not decode the response error")
+    }
+    
+    internal func drilldown<T: Decodable>(_ dict: [String: Any], keyPath: String, decoder: JSONDecoder, response: HTTPURLResponse) throws -> Response<T> {
+        let segments = keyPath.split(separator: ".").map { String($0) }
+        var serialized: [String: Any] = [:]
+        
+        segments.forEach { key in
+            serialized[key] = dict[key] ?? [:]
+        }
+        
+        let dataSerialized = try JSONSerialization.data(withJSONObject: serialized, options: .prettyPrinted)
+        
+        let value = try decoder.decode(T.self, from: dataSerialized)
+        return .init(value: value, response: response)
     }
 }
 
