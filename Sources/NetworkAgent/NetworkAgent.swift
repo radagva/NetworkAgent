@@ -11,7 +11,14 @@ import Combine
 public struct NetworkAgent {
 
     public struct Response<T> {
-        public let data: T
+        /// The decoded payload wrapped in a `Result`.
+        ///
+        /// - `.success(T)` when the body decoded successfully.
+        /// - `.failure(Error)` when the transport succeeded but decoding failed.
+        ///
+        /// Transport-level failures (no `HTTPURLResponse`) are surfaced as a thrown
+        /// error from the request method itself and never reach this struct.
+        public let data: Result<T, Error>
         public let response: HTTPURLResponse
     }
 
@@ -30,7 +37,7 @@ public struct NetworkAgent {
                 plugins.forEach { $0.onResponse(nil, with: nil, receiving: error, from: endpoint) }
                 return error
             }
-            .tryMap { data, response -> Response<T> in
+            .map { data, response -> Response<T> in
                 let httpResponse = response as! HTTPURLResponse
 
                 decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -43,10 +50,10 @@ public struct NetworkAgent {
                     let payload = try Self.extractPayload(from: data, keyPath: keyPath)
                     let decoded = try decoder.decode(T.self, from: payload)
                     plugins.forEach { $0.onResponse(httpResponse, with: payload, from: endpoint) }
-                    return Response(data: decoded, response: httpResponse)
+                    return Response(data: .success(decoded), response: httpResponse)
                 } catch {
                     plugins.forEach { $0.onResponse(httpResponse, with: data, receiving: error, from: endpoint) }
-                    throw error
+                    return Response(data: .failure(error), response: httpResponse)
                 }
             }
             .receive(on: DispatchQueue.main)
@@ -78,10 +85,10 @@ public struct NetworkAgent {
         do {
             let decoded = try decoder.decode(T.self, from: data)
             plugins.forEach { $0.onResponse(httpResponse, with: data, from: endpoint) }
-            return Response(data: decoded, response: httpResponse)
+            return Response(data: .success(decoded), response: httpResponse)
         } catch {
             plugins.forEach { $0.onResponse(httpResponse, with: data, receiving: error, from: endpoint) }
-            throw error
+            return Response(data: .failure(error), response: httpResponse)
         }
     }
 

@@ -121,41 +121,75 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
 }
 ```
 
-Both overloads return `NetworkAgent.Response<T>` rather than the decoded model directly. This is an intentional change so callers can inspect the underlying `HTTPURLResponse` (status code, headers, etc.) along with the decoded payload.
+Both overloads return `NetworkAgent.Response<T>` rather than the decoded model directly. This is an intentional change so callers can inspect the underlying `HTTPURLResponse` (status code, headers, etc.) **even when decoding fails**.
 
 ### `NetworkAgent.Response<T>`
 
 ```swift
 public struct Response<T> {
-    public let data: T                  // your decoded model
-    public let response: HTTPURLResponse // the raw HTTP response
+    /// The decoded payload wrapped in a `Result`.
+    ///
+    /// - `.success(T)` when the body decoded successfully.
+    /// - `.failure(Error)` when the transport succeeded but decoding failed.
+    ///
+    /// Transport-level failures (no `HTTPURLResponse`) are surfaced as a thrown
+    /// error from the request method itself and never reach this struct.
+    public let data: Result<T, Error>
+    public let response: HTTPURLResponse
 }
 ```
 
-- `data` is the decoded model (`T`), already parsed from JSON.
-- `response` exposes the `HTTPURLResponse` so callers can read the status code, headers, or other metadata without having to thread it through plugins.
+- `data` is a `Result<T, Error>`. On success it contains the decoded model; on failure it contains the underlying error (`DecodingError`, `JSONSerialization` error, etc.).
+- `response` exposes the `HTTPURLResponse` so callers can read the status code, headers, or other metadata — this is guaranteed to be present whenever the call did not throw.
 
-#### Migrating to `Response<T>`
+#### Why a `Result` and not just `T`?
 
-If you were previously calling:
+Earlier versions of the library threw on any decoding error, which meant the caller lost access to the `HTTPURLResponse` for failed decodes. That is painful in real-world APIs that return error envelopes on non-2xx status codes, or sometimes return malformed payloads that you'd like to log or inspect. By moving the decoded payload into a `Result`, callers can:
+
+1. Read the HTTP status code / headers regardless of whether decoding succeeded.
+2. Inspect the decoding error directly and decide whether to retry, re-decode against a different model, or surface a user-facing message.
+3. Recover from "soft" failures (e.g., an empty body) without try/catch ceremony.
+
+#### Unwrapping the `Result`
+
+The simplest pattern when you only care about the success case is `try response.data.get()`:
 
 ```swift
-let posts: [Post] = try await provider.request(endpoint: .posts)
+let response: NetworkAgent.Response<[Post]> =
+    try await provider.request(endpoint: .posts)
+
+let posts = try response.data.get() // throws the DecodingError if it failed
 ```
 
-You now need to unwrap `.data`:
+To branch explicitly on success/failure while still using the HTTP response:
 
 ```swift
-let response: NetworkAgent.Response<[Post]> = try await provider.request(endpoint: .posts)
-let posts = response.data
+let response: NetworkAgent.Response<Post> =
+    try await provider.request(endpoint: .post(id: 1))
+
+switch response.data {
+case .success(let post):
+    print("Decoded post:", post)
+case .failure(let error):
+    print("Status:", response.response.statusCode)
+    print("Decoding error:", error)
+}
 ```
 
-For Combine pipelines, map through `\.data`:
+For Combine, use `tryMap` to propagate decoding errors downstream as `Error`:
 
 ```swift
 provider.request(endpoint: .posts)
-    .map(\.data)
+    .tryMap { try $0.data.get() }
     .eraseToAnyPublisher()
+```
+
+Or `map` if you want to keep the `Result` and handle it at the call site:
+
+```swift
+provider.request(endpoint: .posts)
+    .map { ($0.data, $0.response.statusCode) }
+    .sink { result, status in /* ... */ }
 ```
 
 ### `RequestConfiguration`
@@ -242,19 +276,19 @@ final class Repository {
 
     func login(email: String, password: String) -> AnyPublisher<Session, Error> {
         provider.request(endpoint: .login(email: email, password: password))
-            .map(\.data)               // unwrap Response<Session> -> Session
+            .tryMap { try $0.data.get() }      // Result<Session, Error> -> Session
             .eraseToAnyPublisher()
     }
 
     func books(query: [String: Any]) -> AnyPublisher<[Book], Error> {
         provider.request(endpoint: .books(query: query))
-            .map(\.data)
+            .tryMap { try $0.data.get() }
             .eraseToAnyPublisher()
     }
 
     func book(id: Int) -> AnyPublisher<Book, Error> {
         provider.request(endpoint: .book(id: id))
-            .map(\.data)
+            .tryMap { try $0.data.get() }
             .eraseToAnyPublisher()
     }
 }
@@ -273,14 +307,22 @@ final class Repository {
     func login(email: String, password: String) async throws -> Session {
         let response: NetworkAgent.Response<Session> =
             try await provider.request(endpoint: .login(email: email, password: password))
-        return response.data
+        return try response.data.get()
     }
 
     @available(macOS 12, *) @available(iOS 15, *)
     func books(query: [String: Any]) async throws -> [Book] {
         let response: NetworkAgent.Response<[Book]> =
             try await provider.request(endpoint: .books(query: query))
-        return response.data
+        return try response.data.get()
+    }
+
+    /// Variant that exposes both the decoded payload and the HTTP response so
+    /// callers can read pagination headers or the raw status code while still
+    /// handling decoding failures non-fatally.
+    @available(macOS 12, *) @available(iOS 15, *)
+    func booksDetailed(query: [String: Any]) async throws -> NetworkAgent.Response<[Book]> {
+        try await provider.request(endpoint: .books(query: query))
     }
 }
 ```
@@ -396,12 +438,25 @@ Cannot convert value of type 'NetworkAgent.Response<T>' to type '[Post]' in coer
 Generic parameter 'T' could not be inferred
 ```
 
-Either annotate the result explicitly or read `.data`:
+Annotate the result explicitly and `get()` the `Result`:
 
 ```swift
 let response: NetworkAgent.Response<[Post]> = try await provider.request(endpoint: .posts)
-// or
-let posts: [Post] = try await provider.request(endpoint: .posts).data
+let posts = try response.data.get()
+```
+
+### Decoding errors are not thrown anymore
+
+Previously a `DecodingError` from the body would be thrown from `request(...)`. Starting with this version:
+
+- **Transport errors** (DNS failure, no internet, request cancelled, invalid URL, etc.) still throw from `request(...)` because no `HTTPURLResponse` is available.
+- **Decoding errors** are captured into `Response.data` as `.failure(error)`. The call does **not** throw. This means a `do { try await provider.request(...) } catch { ... }` block will no longer catch malformed-JSON errors — they have to be observed through the returned `Result`.
+
+If you want the old "throw on any failure" behavior, simply chain `try response.data.get()`:
+
+```swift
+let response = try await provider.request(endpoint: .posts) as NetworkAgent.Response<[Post]>
+let posts = try response.data.get() // throws DecodingError if decoding failed
 ```
 
 ### Force-unwrapped HTTP response

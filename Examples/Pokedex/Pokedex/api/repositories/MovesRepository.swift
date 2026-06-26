@@ -18,13 +18,13 @@ class MovesRepository {
     
     func index<T: Codable>(query: [String: Any]) -> AnyPublisher<T, Error> {
         provider.request(endpoint: .moves(query: query))
-            .map(\.data)
+            .tryMap { try $0.data.get() }
             .eraseToAnyPublisher()
     }
 
     func show(id: Int, query: [String: Any]) -> AnyPublisher<Move, Error> {
         provider.request(endpoint: .move(id: id, query: query))
-            .map(\.data)
+            .tryMap { try $0.data.get() }
             .eraseToAnyPublisher()
     }
 }
