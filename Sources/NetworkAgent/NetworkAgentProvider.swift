@@ -36,22 +36,22 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
     }
     
     // MARK: Combine handler to perform requests
-    public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) -> AnyPublisher<T, Error> {
+    public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) -> AnyPublisher<NetworkAgent.Response<T>, Error> {
         let (request, configuration) = configure(endpoint: endpoint, config: config)
-        
+
         plugins.forEach { $0.onRequest(request, with: configuration) }
-        
+
         return run(request, config: configuration, plugins: plugins, from: endpoint)
     }
-    
+
     // MARK: Async/Await handler to perform requests
     @available(macOS 12, *) @available(iOS 15, *)
-    public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) async throws -> T {
-         
+    public func request<T: Decodable>(endpoint: E, config: RequestConfiguration? = nil) async throws -> NetworkAgent.Response<T> {
+
         let (request, configuration) = configure(endpoint: endpoint, config: config)
-        
+
         plugins.forEach { $0.onRequest(request, with: configuration) }
-        
+
         return try await run(request, config: configuration, plugins: plugins, from: endpoint)
     }
     
@@ -115,8 +115,8 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
         config: RequestConfiguration,
         plugins: [NetworkAgentPlugin],
         from endpoint: NetworkAgentEndpoint
-    ) -> AnyPublisher<T, Error> {
-        
+    ) -> AnyPublisher<NetworkAgent.Response<T>, Error> {
+
         agent.run(
             request,
             config.decoder,
@@ -126,10 +126,8 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
             plugins: plugins,
             from: endpoint
         )
-        .map(\.value)
-        .eraseToAnyPublisher()
     }
-    
+
     // MARK: Async/Await handler
     /// ENDPOINT EXECUTER, THE GENERIC PARSES THE ENDPOINT RESPONSE TO THE REQUIRED DATA Codable MODEL
     @available(macOS 12, *) @available(iOS 15, *)
@@ -138,23 +136,17 @@ public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
         config: RequestConfiguration,
         plugins: [NetworkAgentPlugin],
         from endpoint: NetworkAgentEndpoint
-    ) async throws -> T {
-        do {
-            let result = try await agent.run(
-                request,
-                config.decoder,
-                from: config.from,
-                dateFormat: config.dateFormat,
-                timeZone: config.timeZone,
-                plugins: plugins,
-                from: endpoint,
-                for: T.self
-            )
-            
-            return result.value
-        } catch {
-            throw error
-        }
+    ) async throws -> NetworkAgent.Response<T> {
+        try await agent.run(
+            request,
+            config.decoder,
+            from: config.from,
+            dateFormat: config.dateFormat,
+            timeZone: config.timeZone,
+            plugins: plugins,
+            from: endpoint,
+            for: T.self
+        )
     }
     
     private func makeUploadBoundaryField(name: String, value: Data, using boundary: String) -> String {

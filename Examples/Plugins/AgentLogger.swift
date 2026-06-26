@@ -52,39 +52,32 @@ class AgentLogger: NetworkAgentPlugin {
     }
     
     // Errors handler
-    func onResponse(_ response: HTTPURLResponse?, with payload: Data?, receiving error: NetworkAgent.NetworkError, from endpoint: NetworkAgentEndpoint) {
+    func onResponse(_ response: HTTPURLResponse?, with payload: Data?, receiving error: Error, from endpoint: NetworkAgentEndpoint) {
         if options.contains(.errors) || options.contains(.verbose) {
-            
+
             if let response = response, let payload = payload {
                 printFormatting(label: "STATUS CODE =>", response.statusCode)
                 printFormatting(label: 200...299 ~= response.statusCode ? "PAYLOAD =>" : "ERROR =>", "\(json: payload)")
             }
-            
-            if case let .urlError(error) = error {
-                switch error.code {
+
+            if let urlError = error as? URLError {
+                switch urlError.code {
                 case .notConnectedToInternet: print("YOU ARE NOT CONNECTED TO INTERNET")
                 case .timedOut: print("REQUEST TIME OUT for endpoint: \(endpoint.baseURL)\(endpoint.path)")
-                default: print("ANOTHER UNHANDLED URL ERROR: \(error)")
+                default: print("ANOTHER UNHANDLED URL ERROR: \(urlError)")
                 }
                 return
             }
-            
-            if case let .decodingError(error) = error {
-                switch error {
+
+            if let decodingError = error as? DecodingError {
+                switch decodingError {
                 case .keyNotFound(let keyPath, let context): printFormatting(label: "DECODING ERROR FOR KEY: \(keyPath). AT CONTEXT: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
                 case .typeMismatch(let type, let context): printFormatting(label: "DECODING ERROR FOR TYPE: \(type). DEBUG INFO: \(context.debugDescription). AT CONTEXT: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
-                default: print("ANOTHER UNHANDLED DECODING ERROR: \(error)")
+                default: print("ANOTHER UNHANDLED DECODING ERROR: \(decodingError)")
                 }
                 return
             }
-            
-            if case let .unprocesableEntity(_, description) = error {
-                if let data = description.data(using: .utf8) {
-                    printFormatting(label: "UNPROCESABLE ENTITY =>", "\(json: data)")
-                    return
-                }
-            }
-            
+
             printFormatting(label: "ANOTHER ERROR", error)
         }
     }

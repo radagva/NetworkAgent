@@ -56,8 +56,8 @@ final class NetworkAgentTests: XCTestCase {
     
     @available(macOS 12, *) @available(iOS 15, *)
     func test_CanRunAnAsyncHTTPRequest() async throws {
-        let posts = try await provider.request(endpoint: .posts) as [Post]
-        XCTAssertNotNil(posts)
+        let response: NetworkAgent.Response<[Post]> = try await provider.request(endpoint: .posts)
+        XCTAssertNotNil(response.data)
     }
     
     @available(macOS 12, *) @available(iOS 15, *)
@@ -75,7 +75,7 @@ final class NetworkAgentTests: XCTestCase {
         var post: Post? = nil
         
         do {
-            post = try await fetchPost(with: 0)
+            post = try await fetchPost(with: 0).data
         } catch {
             // the first field it will try to decode should be userId
             // as is the firt field declared in Post model
@@ -90,9 +90,9 @@ final class NetworkAgentTests: XCTestCase {
     
     @discardableResult
     @available(macOS 12, *) @available(iOS 15, *)
-    private func fetchPost(with id: Int) async throws -> Post {
+    private func fetchPost(with id: Int) async throws -> NetworkAgent.Response<Post> {
         do {
-             return try await provider.request(endpoint: .post(id: id)) as Post
+            return try await provider.request(endpoint: .post(id: id))
         } catch {
             throw error
         }
