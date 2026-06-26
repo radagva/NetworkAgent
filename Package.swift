@@ -1,23 +1,16 @@
-// swift-tools-version:5.3
+// swift-tools-version:6.3
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
 
 let package = Package(
     name: "NetworkAgent",
-    platforms: [
-        .iOS(.v13),
-        .macOS(.v10_15),
-    ],
+    platforms: [.iOS(.v16), .macOS(.v10_15)],
     products: [
         // Products define the executables and libraries a package produces, and make them visible to other packages.
         .library(
             name: "NetworkAgent",
             targets: ["NetworkAgent"]),
-    ],
-    dependencies: [
-        // Dependencies declare other packages that this package depends on.
-        // .package(url: /* package url */, from: "1.0.0"),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
@@ -27,6 +20,8 @@ let package = Package(
             dependencies: []),
         .testTarget(
             name: "NetworkAgentTests",
-            dependencies: ["NetworkAgent"]),
-    ]
+            dependencies: ["NetworkAgent"]
+        ),
+    ],
+    swiftLanguageModes: [.v6]
 )
