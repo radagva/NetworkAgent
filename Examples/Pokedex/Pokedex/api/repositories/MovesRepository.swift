@@ -11,20 +11,26 @@ import NetworkAgent
 
 class MovesRepository {
     var provider: NetworkAgentProvider<Api>
-    
+
     init(provider agent: NetworkAgentProvider<Api>) {
         provider = agent
     }
-    
-    func index<T: Codable>(query: [String: Any]) -> AnyPublisher<T, Error> {
+
+    func index<T: Decodable>(query: [String: Any]) -> AnyPublisher<T, Error> {
         provider.request(endpoint: .moves(query: query))
-            .tryMap { try $0.data.get() }
+            .tryMap { try Self.decoder.decode(T.self, from: $0.data) }
             .eraseToAnyPublisher()
     }
 
     func show(id: Int, query: [String: Any]) -> AnyPublisher<Move, Error> {
         provider.request(endpoint: .move(id: id, query: query))
-            .tryMap { try $0.data.get() }
+            .tryMap { try Self.decoder.decode(Move.self, from: $0.data) }
             .eraseToAnyPublisher()
     }
+
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+    }()
 }

@@ -28,7 +28,7 @@ class AgentLogger: NetworkAgentPlugin {
     }
     
     // Request handler
-    func onRequest(_ request: URLRequest, with configuration: RequestConfiguration) {
+    func onRequest(_ request: URLRequest) {
         if options.contains(.requests) || options.contains(.verbose) {
             printFormatting(label: "URL", "\(request.url)")
             printFormatting(label: "HEADERS", "\(request.allHTTPHeaderFields)")
