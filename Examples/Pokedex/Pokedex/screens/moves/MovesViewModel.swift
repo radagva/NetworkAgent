@@ -6,17 +6,19 @@
 //
 
 import Foundation
-import Combine
 
+@MainActor
 class MovesViewModel: ObservableObject {
     @Published var moves: [Move] = []
-    
+
     init() {
-        Repository.moves.index(query: ["offset": 20, "limit": 20])
-            .map({ (pagination: Pagination<Move>) in
-                return self.moves + pagination.results
-            })
-            .catch { _ in Just(self.moves) }
-            .assign(to: &$moves)
+        Task {
+            do {
+                let pagination: Pagination<Move> = try await Repository.moves.index(query: ["offset": 20, "limit": 20])
+                self.moves += pagination.results
+            } catch {
+                // keep the current list on failure
+            }
+        }
     }
 }

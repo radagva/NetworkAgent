@@ -6,17 +6,19 @@
 //
 
 import Foundation
-import Combine
 
+@MainActor
 class PokemonsViewModel: ObservableObject {
     @Published var pokemons: [Pokemon] = []
-    
+
     init() {
-        Repository.pokemons.index(query: ["offset": 20, "limit": 20])
-            .map({ (pagination: Pagination<Pokemon>) in
-                return self.pokemons + pagination.results
-            })
-            .catch { _ in Just(self.pokemons) }
-            .assign(to: &$pokemons)
+        Task {
+            do {
+                let pagination: Pagination<Pokemon> = try await Repository.pokemons.index(query: ["offset": 20, "limit": 20])
+                self.pokemons += pagination.results
+            } catch {
+                // keep the current list on failure
+            }
+        }
     }
 }

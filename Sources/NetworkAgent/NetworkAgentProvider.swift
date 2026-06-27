@@ -6,34 +6,19 @@
 //
 
 import Foundation
-import Combine
 
-public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
+public struct NetworkAgentProvider<E: NetworkAgentEndpoint>: Sendable {
 
     private let agent: NetworkAgent = .init()
-    private var plugins: [NetworkAgentPlugin] = []
+    private let plugins: [NetworkAgentPlugin]
 
     public init(plugins: [NetworkAgentPlugin] = []) {
         self.plugins = plugins
     }
 
-    // MARK: Combine handler to perform requests
-    public func request(endpoint: E) -> AnyPublisher<(data: Data, response: URLResponse), Error> {
-        let request = configure(endpoint: endpoint)
-
-        plugins.forEach { $0.onRequest(request) }
-
-        return agent.run(request, plugins: plugins, from: endpoint)
-    }
-
-    // MARK: Async/Await handler to perform requests
-    @available(macOS 12, *) @available(iOS 15, *)
     public func request(endpoint: E) async throws -> (data: Data, response: URLResponse) {
         let request = configure(endpoint: endpoint)
-
-        plugins.forEach { $0.onRequest(request) }
-
-        return try await agent.run(request, plugins: plugins, from: endpoint)
+        return try await agent.run(request, plugins: plugins)
     }
 
     // MARK: Build Request object

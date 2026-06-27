@@ -6,26 +6,23 @@
 //
 
 import Foundation
-import Combine
 import NetworkAgent
 
 class PokemonsRepository {
-    var provider: NetworkAgentProvider<Api>
+    let provider: NetworkAgentProvider<Api>
 
     init(provider agent: NetworkAgentProvider<Api>) {
         provider = agent
     }
 
-    func index<T: Decodable>(query: [String: Any]) -> AnyPublisher<T, Error> {
-        provider.request(endpoint: .pokemons(query: query))
-            .tryMap { try Self.decoder.decode(T.self, from: $0.data) }
-            .eraseToAnyPublisher()
+    func index<T: Decodable>(query: [String: Any]) async throws -> T {
+        let (data, _) = try await provider.request(endpoint: .pokemons(query: query))
+        return try Self.decoder.decode(T.self, from: data)
     }
 
-    func show(id: Int, query: [String: Any]) -> AnyPublisher<Pokemon, Error> {
-        provider.request(endpoint: .pokemon(id: id, query: query))
-            .tryMap { try Self.decoder.decode(Pokemon.self, from: $0.data) }
-            .eraseToAnyPublisher()
+    func show(id: Int, query: [String: Any]) async throws -> Pokemon {
+        let (data, _) = try await provider.request(endpoint: .pokemon(id: id, query: query))
+        return try Self.decoder.decode(Pokemon.self, from: data)
     }
 
     private static let decoder: JSONDecoder = {

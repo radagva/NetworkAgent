@@ -9,30 +9,28 @@ import Foundation
 import NetworkAgent
 
 class AgentLogger: NetworkAgentPlugin {
-    
+
     enum LogType {
-        /// will display everything (Request, Response and errors)
+        /// will display everything (Request and Response)
         case verbose
         /// will display just network responses
         case responses
         /// will display just network request configuration
         case requests
-        /// will display only network and URL errors
-        case errors
     }
-    
+
     private var options: Set<LogType>!
-    
+
     init(options types: Set<LogType> = .init()) {
         options = types
     }
-    
-    // Request handler
-    func onRequest(_ request: URLRequest) {
+
+    // Request interceptor
+    func onRequest(_ request: URLRequest) async throws -> URLRequest {
         if options.contains(.requests) || options.contains(.verbose) {
-            printFormatting(label: "URL", "\(request.url)")
-            printFormatting(label: "HEADERS", "\(request.allHTTPHeaderFields)")
-            printFormatting(label: "METHOD", "\(request.httpMethod)")
+            printFormatting(label: "URL", "\(String(describing: request.url))")
+            printFormatting(label: "HEADERS", "\(String(describing: request.allHTTPHeaderFields))")
+            printFormatting(label: "METHOD", "\(String(describing: request.httpMethod))")
             if let method = request.httpMethod, method != "GET" {
                 if let body = request.httpBody {
                     printFormatting(label: "BODY", "\(json: body)")
@@ -41,48 +39,24 @@ class AgentLogger: NetworkAgentPlugin {
                 }
             }
         }
+        return request
     }
-    
-    // Response handler
-    func onResponse(_ response: HTTPURLResponse, with payload: Data) {
+
+    // Response interceptor
+    func onResponse(
+        _ response: URLResponse,
+        data: Data,
+        request: URLRequest
+    ) async throws -> (data: Data, response: URLResponse) {
         if options.contains(.responses) || options.contains(.verbose) {
-            printFormatting(label: "STATUS CODE =>", response.statusCode)
-            printFormatting(label: "PAYLOAD =>", "\(json: payload)")
+            if let httpResponse = response as? HTTPURLResponse {
+                printFormatting(label: "STATUS CODE =>", httpResponse.statusCode)
+            }
+            printFormatting(label: "PAYLOAD =>", "\(json: data)")
         }
+        return (data: data, response: response)
     }
-    
-    // Errors handler
-    func onResponse(_ response: HTTPURLResponse?, with payload: Data?, receiving error: Error, from endpoint: NetworkAgentEndpoint) {
-        if options.contains(.errors) || options.contains(.verbose) {
 
-            if let response = response, let payload = payload {
-                printFormatting(label: "STATUS CODE =>", response.statusCode)
-                printFormatting(label: 200...299 ~= response.statusCode ? "PAYLOAD =>" : "ERROR =>", "\(json: payload)")
-            }
-
-            if let urlError = error as? URLError {
-                switch urlError.code {
-                case .notConnectedToInternet: print("YOU ARE NOT CONNECTED TO INTERNET")
-                case .timedOut: print("REQUEST TIME OUT for endpoint: \(endpoint.baseURL)\(endpoint.path)")
-                default: print("ANOTHER UNHANDLED URL ERROR: \(urlError)")
-                }
-                return
-            }
-
-            if let decodingError = error as? DecodingError {
-                switch decodingError {
-                case .keyNotFound(let keyPath, let context): printFormatting(label: "DECODING ERROR FOR KEY: \(keyPath). AT CONTEXT: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
-                case .typeMismatch(let type, let context): printFormatting(label: "DECODING ERROR FOR TYPE: \(type). DEBUG INFO: \(context.debugDescription). AT CONTEXT: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
-                default: print("ANOTHER UNHANDLED DECODING ERROR: \(decodingError)")
-                }
-                return
-            }
-
-            printFormatting(label: "ANOTHER ERROR", error)
-        }
-    }
-    
-    
     private func printFormatting(label: String, _ data: Any? = nil) {
         let formatter = DateFormatter()
         formatter.dateFormat = "dd-MM-yyyy HH:mm:ss"
