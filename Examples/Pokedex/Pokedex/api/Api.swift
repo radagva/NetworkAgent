@@ -9,11 +9,11 @@ import Foundation
 import NetworkAgent
 
 enum Api {
-    case pokemons(query: [String: Any])
-    case pokemon(id: Int, query: [String: Any])
-    
-    case moves(query: [String: Any])
-    case move(id: Int, query: [String: Any])
+    case pokemons(query: [String: any Sendable])
+    case pokemon(id: Int, query: [String: any Sendable])
+
+    case moves(query: [String: any Sendable])
+    case move(id: Int, query: [String: any Sendable])
 }
 
 extension Api: NetworkAgentEndpoint {

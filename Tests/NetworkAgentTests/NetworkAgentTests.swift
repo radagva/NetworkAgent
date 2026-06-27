@@ -44,6 +44,14 @@ private actor EventLog {
     }
 }
 
+private actor EndpointRecorder {
+    private(set) var paths: [String] = []
+
+    func record(_ endpoint: any NetworkAgentEndpoint) {
+        paths.append(endpoint.path)
+    }
+}
+
 @Suite("NetworkAgentProvider request")
 struct NetworkAgentProviderTests {
 
@@ -95,7 +103,10 @@ struct PluginInterceptorTests {
         let value: String
         let recorder: RequestRecorder
 
-        func onRequest(_ request: URLRequest) async throws -> URLRequest {
+        func onRequest(
+            _ request: URLRequest,
+            endpoint: any NetworkAgentEndpoint
+        ) async throws -> URLRequest {
             var mutated = request
             mutated.addValue(value, forHTTPHeaderField: name)
             await recorder.record(mutated)
@@ -124,7 +135,9 @@ struct PluginInterceptorTests {
         func onResponse(
             _ response: URLResponse,
             data: Data,
-            request: URLRequest
+            request: URLRequest,
+            endpoint: any NetworkAgentEndpoint,
+            agent: NetworkAgent
         ) async throws -> (data: Data, response: URLResponse) {
             (data: payload, response: response)
         }
@@ -146,7 +159,9 @@ struct PluginInterceptorTests {
         func onResponse(
             _ response: URLResponse,
             data: Data,
-            request: URLRequest
+            request: URLRequest,
+            endpoint: any NetworkAgentEndpoint,
+            agent: NetworkAgent
         ) async throws -> (data: Data, response: URLResponse) {
             await recorder.record(request)
             return (data: data, response: response)
@@ -170,13 +185,103 @@ struct PluginInterceptorTests {
         #expect(captured.value(forHTTPHeaderField: "X-Trace") == "abc")
     }
 
+    // MARK: - endpoint context
+
+    private struct EndpointSpy: NetworkAgentPlugin {
+        let onRequestRecorder: EndpointRecorder
+        let onResponseRecorder: EndpointRecorder
+
+        func onRequest(
+            _ request: URLRequest,
+            endpoint: any NetworkAgentEndpoint
+        ) async throws -> URLRequest {
+            await onRequestRecorder.record(endpoint)
+            return request
+        }
+
+        func onResponse(
+            _ response: URLResponse,
+            data: Data,
+            request: URLRequest,
+            endpoint: any NetworkAgentEndpoint,
+            agent: NetworkAgent
+        ) async throws -> (data: Data, response: URLResponse) {
+            await onResponseRecorder.record(endpoint)
+            return (data: data, response: response)
+        }
+    }
+
+    @Test("interceptors receive the originating NetworkAgentEndpoint")
+    func interceptorsReceiveEndpoint() async throws {
+        let onRequestRecorder = EndpointRecorder()
+        let onResponseRecorder = EndpointRecorder()
+        let provider = NetworkAgentProvider<Api>(
+            plugins: [EndpointSpy(onRequestRecorder: onRequestRecorder, onResponseRecorder: onResponseRecorder)]
+        )
+
+        _ = try await provider.request(endpoint: .post(id: 1))
+
+        #expect(await onRequestRecorder.paths == ["/posts/1"])
+        #expect(await onResponseRecorder.paths == ["/posts/1"])
+    }
+
+    // MARK: - side-request from onResponse via agent.request(_:)
+
+    private struct SideRequester: NetworkAgentPlugin {
+        let sideEndpoint: any NetworkAgentEndpoint
+        let captured: SideRequestCapture
+
+        func onResponse(
+            _ response: URLResponse,
+            data: Data,
+            request: URLRequest,
+            endpoint: any NetworkAgentEndpoint,
+            agent: NetworkAgent
+        ) async throws -> (data: Data, response: URLResponse) {
+            let (sideData, sideResponse) = try await agent.request(sideEndpoint)
+            await captured.set(data: sideData, response: sideResponse)
+            return (data: data, response: response)
+        }
+    }
+
+    private actor SideRequestCapture {
+        private(set) var data: Data?
+        private(set) var response: URLResponse?
+
+        func set(data: Data, response: URLResponse) {
+            self.data = data
+            self.response = response
+        }
+    }
+
+    @Test("onResponse can fire a side-request through agent.request(_:)")
+    func onResponseFiresSideRequest() async throws {
+        let captured = SideRequestCapture()
+        let provider = NetworkAgentProvider<Api>(
+            plugins: [SideRequester(sideEndpoint: Api.post(id: 2), captured: captured)]
+        )
+
+        _ = try await provider.request(endpoint: .post(id: 1))
+
+        let sideData = try #require(await captured.data)
+        let sideResponse = try #require(await captured.response as? HTTPURLResponse)
+        let sidePost = try JSONDecoder().decode(Post.self, from: sideData)
+
+        #expect(sideResponse.statusCode == 200)
+        #expect(sidePost.id == 2)
+        #expect(sideResponse.url?.path == "/posts/2")
+    }
+
     // MARK: - chain ordering
 
     private struct OrderingPlugin: NetworkAgentPlugin {
         let id: String
         let log: EventLog
 
-        func onRequest(_ request: URLRequest) async throws -> URLRequest {
+        func onRequest(
+            _ request: URLRequest,
+            endpoint: any NetworkAgentEndpoint
+        ) async throws -> URLRequest {
             await log.append("req:\(id)")
             return request
         }
@@ -184,7 +289,9 @@ struct PluginInterceptorTests {
         func onResponse(
             _ response: URLResponse,
             data: Data,
-            request: URLRequest
+            request: URLRequest,
+            endpoint: any NetworkAgentEndpoint,
+            agent: NetworkAgent
         ) async throws -> (data: Data, response: URLResponse) {
             await log.append("res:\(id)")
             return (data: data, response: response)
@@ -211,7 +318,10 @@ struct PluginInterceptorTests {
 
     private struct FailingInterceptor: NetworkAgentPlugin {
         struct Boom: Error {}
-        func onRequest(_ request: URLRequest) async throws -> URLRequest {
+        func onRequest(
+            _ request: URLRequest,
+            endpoint: any NetworkAgentEndpoint
+        ) async throws -> URLRequest {
             throw Boom()
         }
     }

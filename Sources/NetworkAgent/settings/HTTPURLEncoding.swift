@@ -7,7 +7,7 @@
 
 import Foundation
 
-public enum HTTPURLEncoding {
+public enum HTTPURLEncoding: Sendable {
     case json
     case url
 }

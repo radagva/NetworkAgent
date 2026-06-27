@@ -7,7 +7,7 @@
 
 import Foundation
 
-public protocol NetworkAgentEndpoint {
+public protocol NetworkAgentEndpoint: Sendable {
     var baseURL: URL { get }
     var path: String { get }
     var method: HTTPMethod { get }

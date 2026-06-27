@@ -7,9 +7,9 @@
 
 import Foundation
 
-public enum HTTPTask {
+public enum HTTPTask: Sendable {
     case requestPlain
-    case requestAttributes(attributes: [String: Any], encoding: HTTPURLEncoding)
-    case requestWithoutAttributes(content: Any)
+    case requestAttributes(attributes: [String: any Sendable], encoding: HTTPURLEncoding)
+    case requestWithoutAttributes(content: any Sendable)
     case upload(parts: [HTTPMultipartTask])
 }

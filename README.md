@@ -4,27 +4,42 @@
 <a href="https://github.com/apple/swift-package-manager"><img src="https://camo.githubusercontent.com/685501f58b5a9e01d0dfde93d60b80f46c275435c0bfd09bb9bc9dd0dde9a830/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f53776966742532305061636b6167652532304d616e616765722d636f6d70617469626c652d627269676874677265656e2e737667" alt="Swift Package Manager compatible" data-canonical-src="https://img.shields.io/badge/Swift%20Package%20Manager-compatible-brightgreen.svg" style="max-width:100%;"></a>
 </p>
 
-NetworkAgent is a lightweight, dependency-free networking layer inspired by Moya. It supports both the **Combine** API and **Swift Concurrency** (`async`/`await`), is fully `Codable`-based, and exposes a plugin system for cross-cutting concerns (logging, auth, metrics, etc.).
+**NetworkAgent** is a small, dependency-free networking layer for Swift. It models your API as a single endpoint enum, performs HTTP requests with `async`/`await`, and returns the raw `(Data, URLResponse)` tuple — so you stay in full control of decoding. A `Sendable` plugin protocol lets you hook into the request/response lifecycle as async interceptors that can mutate the request before it's sent, mutate the response before it reaches the caller, or fire side-requests (e.g., for token refresh) from inside `onResponse`.
+
+- Swift 6 / strict concurrency
+- iOS 16+, macOS 12+
+- No decoding in the library — you get `Data` and decode at the call site
+- Plugins as async interceptors (`onRequest`, `onResponse`)
+- A `NetworkAgent` reference inside `onResponse` so plugins can fire follow-up calls
 
 ---
 
 ## Table of Contents
 
 - [Installation](#installation)
+- [Quick Start](#quick-start)
 - [Core Concepts](#core-concepts)
   - [`NetworkAgentEndpoint`](#networkagentendpoint)
-  - [`HTTPTask`](#httptask)
   - [`HTTPMethod`](#httpmethod)
+  - [`HTTPTask`](#httptask)
+  - [`HTTPURLEncoding`](#httpurlencoding)
+  - [`HTTPMultipartTask`](#httpmultiparttask)
   - [`NetworkAgentProvider`](#networkagentprovider)
-  - [`NetworkAgent.Response<T>`](#networkagentresponset)
-  - [`RequestConfiguration`](#requestconfiguration)
+  - [`NetworkAgent`](#networkagent)
+  - [`NetworkAgentPlugin`](#networkagentplugin)
 - [Usage](#usage)
-  - [Define an Endpoint](#1-define-an-endpoint)
-  - [Build a Repository](#2-build-a-repository)
-  - [Consume from a ViewModel](#3-consume-from-a-viewmodel)
-- [Plugins](#plugins)
+  - [1. Define an endpoint](#1-define-an-endpoint)
+  - [2. Build a repository](#2-build-a-repository)
+  - [3. Consume from a ViewModel](#3-consume-from-a-viewmodel)
+- [Plugins as Interceptors](#plugins-as-interceptors)
+  - [Logging plugin](#logging-plugin)
+  - [Auth header injector](#auth-header-injector)
+  - [Token refresh via side-request from `onResponse`](#token-refresh-via-side-request-from-onresponse)
+  - [Chain ordering](#chain-ordering)
 - [Multipart Uploads](#multipart-uploads)
-- [Caveats & Edge Cases](#caveats--edge-cases)
+- [Testing](#testing)
+- [Notes & Gotchas](#notes--gotchas)
+- [License](#license)
 
 ---
 
@@ -34,9 +49,51 @@ Add NetworkAgent through Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/<your-org>/NetworkAgent.git", from: "x.y.z")
+    .package(url: "https://github.com/radagva/NetworkAgent.git", from: "x.y.z")
 ]
 ```
+
+Then add `"NetworkAgent"` to your target's dependencies.
+
+---
+
+## Quick Start
+
+```swift
+import NetworkAgent
+
+enum Api: NetworkAgentEndpoint {
+    case posts
+    case post(id: Int)
+
+    var baseURL: URL { URL(string: "https://jsonplaceholder.typicode.com")! }
+    var path: String {
+        switch self {
+        case .posts: return "/posts"
+        case .post(let id): return "/posts/\(id)"
+        }
+    }
+    var method: HTTPMethod { .get }
+    var task: HTTPTask { .requestPlain }
+}
+
+struct Post: Decodable {
+    let id: Int
+    let title: String
+    let body: String
+}
+
+let provider = NetworkAgentProvider<Api>()
+
+let (data, response) = try await provider.request(endpoint: .posts)
+let posts = try JSONDecoder().decode([Post].self, from: data)
+
+if let http = response as? HTTPURLResponse {
+    print("status:", http.statusCode)
+}
+```
+
+That's the whole API surface for a basic request: build the endpoint, hand it to the provider, get back a `(Data, URLResponse)` tuple, decode at the call site.
 
 ---
 
@@ -44,10 +101,10 @@ dependencies: [
 
 ### `NetworkAgentEndpoint`
 
-Every API call is described by a value that conforms to `NetworkAgentEndpoint`. Typically you model your API as an `enum` where each case represents one endpoint.
+Every API call is described by a value that conforms to `NetworkAgentEndpoint`. The conforming type is `Sendable` so it can cross actor boundaries and be stored by plugins.
 
 ```swift
-public protocol NetworkAgentEndpoint {
+public protocol NetworkAgentEndpoint: Sendable {
     var baseURL: URL { get }
     var path: String { get }
     var method: HTTPMethod { get }
@@ -56,7 +113,7 @@ public protocol NetworkAgentEndpoint {
 }
 ```
 
-The protocol ships with a default `headers` implementation:
+The protocol ships with a default `headers`:
 
 ```swift
 [
@@ -65,171 +122,151 @@ The protocol ships with a default `headers` implementation:
 ]
 ```
 
-Override it if your API needs different headers (auth tokens, custom content types, etc.).
-
-### `HTTPTask`
-
-Describes the body / parameters of a request:
-
-```swift
-public enum HTTPTask {
-    case requestPlain                                                    // no body, no query
-    case requestAttributes(attributes: [String: Any], encoding: HTTPURLEncoding)
-    case requestWithoutAttributes(content: Any)                          // currently not serialized — see caveats
-    case upload(parts: [HTTPMultipartTask])                              // multipart/form-data
-}
-```
-
-`HTTPURLEncoding` selects how `requestAttributes` is encoded:
-
-- `.json` – attributes are serialized into the HTTP body as JSON.
-- `.url`  – attributes are appended to the URL as `URLQueryItem`s (use for `GET` queries).
+Override it when you need custom values (auth tokens, alternate content types, etc.).
 
 ### `HTTPMethod`
 
 ```swift
-public enum HTTPMethod: String {
+public enum HTTPMethod: String, Sendable {
     case get, post, put, patch, delete
 }
 ```
 
 The raw value is uppercased and assigned to `URLRequest.httpMethod`.
 
+### `HTTPTask`
+
+Describes the body / query of a request:
+
+```swift
+public enum HTTPTask: Sendable {
+    case requestPlain                                                                  // no body, no query
+    case requestAttributes(attributes: [String: any Sendable], encoding: HTTPURLEncoding)
+    case requestWithoutAttributes(content: any Sendable)                               // currently not serialized — see notes
+    case upload(parts: [HTTPMultipartTask])                                            // multipart/form-data
+}
+```
+
+`attributes` is `[String: any Sendable]` so values can safely cross actor boundaries. Use primitives (`String`, `Int`, `Bool`, `Double`, arrays/dictionaries of primitives) — anything that survives `JSONSerialization` or `URLQueryItem` stringification.
+
+### `HTTPURLEncoding`
+
+Selects how `requestAttributes` are encoded:
+
+```swift
+public enum HTTPURLEncoding: Sendable {
+    case json   // attributes are serialized into the HTTP body as JSON
+    case url    // attributes are appended to the URL as URLQueryItems (use for GET queries)
+}
+```
+
+### `HTTPMultipartTask`
+
+A single multipart part. Pass several of them inside `.upload(parts:)`:
+
+```swift
+public struct HTTPMultipartTask: Sendable {
+    public init(
+        data: Data,
+        name: String,
+        filename: String,
+        mymetype: String? = nil
+    )
+}
+```
+
+- If `mymetype` is `nil`, the part is sent as a plain form field (its `data` is UTF-8 text).
+- If `mymetype` is set (e.g. `"image/png"`), the part is sent as a file upload with the supplied `filename` and `Content-Type`.
+
+A `Boundary-<UUID>` is generated per request and automatically appended to the `Content-Type` header when the task is `.upload`. You only need to declare `"Content-Type": "multipart/form-data"` in your endpoint's headers — the provider appends `; boundary=…`.
+
 ### `NetworkAgentProvider`
 
-`NetworkAgentProvider<E: NetworkAgentEndpoint>` is the type you call to perform requests. It is generic over your endpoint enum.
+The provider is the type you call to perform requests. It's generic over your endpoint enum and is `Sendable`.
 
 ```swift
-public struct NetworkAgentProvider<E: NetworkAgentEndpoint> {
-    public init(
-        plugins: [NetworkAgentPlugin] = [],
-        configuration: RequestConfiguration = .init()
-    )
+public struct NetworkAgentProvider<E: NetworkAgentEndpoint>: Sendable {
+    public init(plugins: [NetworkAgentPlugin] = [])
 
-    // Combine
-    public func request<T: Decodable>(
-        endpoint: E,
-        config: RequestConfiguration? = nil
-    ) -> AnyPublisher<NetworkAgent.Response<T>, Error>
-
-    // Swift Concurrency
-    @available(macOS 12, *) @available(iOS 15, *)
-    public func request<T: Decodable>(
-        endpoint: E,
-        config: RequestConfiguration? = nil
-    ) async throws -> NetworkAgent.Response<T>
+    public func request(endpoint: E) async throws -> (data: Data, response: URLResponse)
 }
 ```
 
-Both overloads return `NetworkAgent.Response<T>` rather than the decoded model directly. This is an intentional change so callers can inspect the underlying `HTTPURLResponse` (status code, headers, etc.) **even when decoding fails**.
+- `plugins` — the interceptor chain (see [Plugins](#plugins-as-interceptors)).
+- `request(endpoint:)` — runs the request through the plugin chain and returns the raw tuple. Decoding is up to the caller.
 
-### `NetworkAgent.Response<T>`
+### `NetworkAgent`
+
+`NetworkAgent` is the lower-level type the provider delegates to. It also has a **public** entry point used from inside `onResponse` interceptors to fire side-requests by endpoint:
 
 ```swift
-public struct Response<T> {
-    /// The decoded payload wrapped in a `Result`.
+public struct NetworkAgent: Sendable {
+    public init()
+
+    /// Fires a one-off request for the given endpoint.
     ///
-    /// - `.success(T)` when the body decoded successfully.
-    /// - `.failure(Error)` when the transport succeeded but decoding failed.
+    /// Intended for use from inside `onResponse` interceptors (e.g. token
+    /// refresh, retries). Requests fired through this method do NOT re-run
+    /// the plugin chain, which is what keeps interceptors from recursing into
+    /// themselves.
+    public func request(_ endpoint: any NetworkAgentEndpoint) async throws -> (data: Data, response: URLResponse)
+}
+```
+
+You usually go through a `NetworkAgentProvider` for normal calls; you only touch `NetworkAgent` directly from inside a plugin (where one is handed to you).
+
+### `NetworkAgentPlugin`
+
+Plugins are async interceptors. Both methods have pass-through defaults, so implement only the side you care about.
+
+```swift
+public protocol NetworkAgentPlugin: Sendable {
+    /// Inspect or mutate the outgoing URLRequest before it is sent.
+    func onRequest(
+        _ request: URLRequest,
+        endpoint: any NetworkAgentEndpoint
+    ) async throws -> URLRequest
+
+    /// Inspect or mutate the response after the network call completes.
     ///
-    /// Transport-level failures (no `HTTPURLResponse`) are surfaced as a thrown
-    /// error from the request method itself and never reach this struct.
-    public let data: Result<T, Error>
-    public let response: HTTPURLResponse
+    /// - parameter request:  the final request that was actually sent
+    ///                       (after every prior onRequest ran).
+    /// - parameter endpoint: the endpoint that produced this request.
+    /// - parameter agent:    a NetworkAgent for firing side-requests.
+    func onResponse(
+        _ response: URLResponse,
+        data: Data,
+        request: URLRequest,
+        endpoint: any NetworkAgentEndpoint,
+        agent: NetworkAgent
+    ) async throws -> (data: Data, response: URLResponse)
 }
 ```
 
-- `data` is a `Result<T, Error>`. On success it contains the decoded model; on failure it contains the underlying error (`DecodingError`, `JSONSerialization` error, etc.).
-- `response` exposes the `HTTPURLResponse` so callers can read the status code, headers, or other metadata — this is guaranteed to be present whenever the call did not throw.
+Behavior summary:
 
-#### Why a `Result` and not just `T`?
-
-Earlier versions of the library threw on any decoding error, which meant the caller lost access to the `HTTPURLResponse` for failed decodes. That is painful in real-world APIs that return error envelopes on non-2xx status codes, or sometimes return malformed payloads that you'd like to log or inspect. By moving the decoded payload into a `Result`, callers can:
-
-1. Read the HTTP status code / headers regardless of whether decoding succeeded.
-2. Inspect the decoding error directly and decide whether to retry, re-decode against a different model, or surface a user-facing message.
-3. Recover from "soft" failures (e.g., an empty body) without try/catch ceremony.
-
-#### Unwrapping the `Result`
-
-The simplest pattern when you only care about the success case is `try response.data.get()`:
-
-```swift
-let response: NetworkAgent.Response<[Post]> =
-    try await provider.request(endpoint: .posts)
-
-let posts = try response.data.get() // throws the DecodingError if it failed
-```
-
-To branch explicitly on success/failure while still using the HTTP response:
-
-```swift
-let response: NetworkAgent.Response<Post> =
-    try await provider.request(endpoint: .post(id: 1))
-
-switch response.data {
-case .success(let post):
-    print("Decoded post:", post)
-case .failure(let error):
-    print("Status:", response.response.statusCode)
-    print("Decoding error:", error)
-}
-```
-
-For Combine, use `tryMap` to propagate decoding errors downstream as `Error`:
-
-```swift
-provider.request(endpoint: .posts)
-    .tryMap { try $0.data.get() }
-    .eraseToAnyPublisher()
-```
-
-Or `map` if you want to keep the `Result` and handle it at the call site:
-
-```swift
-provider.request(endpoint: .posts)
-    .map { ($0.data, $0.response.statusCode) }
-    .sink { result, status in /* ... */ }
-```
-
-### `RequestConfiguration`
-
-Per-request (or per-provider) configuration for decoding:
-
-```swift
-public struct RequestConfiguration {
-    var decoder: JSONDecoder        // your own decoder if needed
-    var from: String                // optional top-level keyPath to "unwrap" before decoding
-    var dateFormat: String          // default: "yyyy-MM-dd HH:mm:ss"
-    var timeZone: String            // default: "UTC"
-}
-```
-
-- `decoder` – override to customize decoding (e.g., a custom `keyDecodingStrategy`).
-- `from`   – when non-empty, the agent looks for that key in the top-level JSON object and decodes its value instead of the whole document. Useful for envelopes like `{ "data": { ... } }`.
-- `dateFormat` / `timeZone` – wired into a `DateFormatter` that becomes the decoder's `dateDecodingStrategy`.
-
-A configuration set on the provider is used as a default. Passing a `config:` argument to `request(...)` overrides it for that call.
+- `onRequest` interceptors run **in registration order**. Each receives the result of the previous one, so you can stack header injectors, signers, etc.
+- `URLSession.shared.data(for:)` is invoked with the final mutated request.
+- `onResponse` interceptors then run **in registration order** on the resulting `(data, response)`. Each can rewrite the body or response, short-circuit (by throwing), or fire side-requests through the `agent` parameter.
+- If any interceptor `throws`, the whole call throws — the URLSession call is skipped (when thrown from `onRequest`) or short-circuited (when thrown from `onResponse`).
 
 ---
 
 ## Usage
 
-### 1. Define an Endpoint
-
-`Api.swift`
+### 1. Define an endpoint
 
 ```swift
 import NetworkAgent
 
 enum Api {
     case login(email: String, password: String)
-    case books(query: [String: Any])
+    case books(query: [String: any Sendable])
     case book(id: Int)
 }
 
 extension Api: NetworkAgentEndpoint {
-    var baseURL: URL { URL(string: "https://some_url.com/api")! }
+    var baseURL: URL { URL(string: "https://example.com/api")! }
 
     var path: String {
         switch self {
@@ -262,265 +299,280 @@ extension Api: NetworkAgentEndpoint {
 }
 ```
 
-### 2. Build a Repository
+### 2. Build a repository
 
-`Repository.swift` (Combine)
-
-```swift
-import Combine
-import NetworkAgent
-
-final class Repository {
-    static let shared = Repository()
-    private let provider = NetworkAgentProvider<Api>(plugins: [])
-
-    func login(email: String, password: String) -> AnyPublisher<Session, Error> {
-        provider.request(endpoint: .login(email: email, password: password))
-            .tryMap { try $0.data.get() }      // Result<Session, Error> -> Session
-            .eraseToAnyPublisher()
-    }
-
-    func books(query: [String: Any]) -> AnyPublisher<[Book], Error> {
-        provider.request(endpoint: .books(query: query))
-            .tryMap { try $0.data.get() }
-            .eraseToAnyPublisher()
-    }
-
-    func book(id: Int) -> AnyPublisher<Book, Error> {
-        provider.request(endpoint: .book(id: id))
-            .tryMap { try $0.data.get() }
-            .eraseToAnyPublisher()
-    }
-}
-```
-
-`Repository.swift` (async/await)
+Repositories typically own the provider and do the decoding. Keep the model types `Decodable` and let the repository surface domain types to the rest of the app.
 
 ```swift
+import Foundation
 import NetworkAgent
 
-final class Repository {
-    static let shared = Repository()
-    private let provider = NetworkAgentProvider<Api>(plugins: [])
+final class BooksRepository: Sendable {
+    private let provider: NetworkAgentProvider<Api>
 
-    @available(macOS 12, *) @available(iOS 15, *)
+    init(provider: NetworkAgentProvider<Api>) {
+        self.provider = provider
+    }
+
     func login(email: String, password: String) async throws -> Session {
-        let response: NetworkAgent.Response<Session> =
-            try await provider.request(endpoint: .login(email: email, password: password))
-        return try response.data.get()
+        let (data, _) = try await provider.request(
+            endpoint: .login(email: email, password: password)
+        )
+        return try Self.decoder.decode(Session.self, from: data)
     }
 
-    @available(macOS 12, *) @available(iOS 15, *)
-    func books(query: [String: Any]) async throws -> [Book] {
-        let response: NetworkAgent.Response<[Book]> =
-            try await provider.request(endpoint: .books(query: query))
-        return try response.data.get()
+    func books(query: [String: any Sendable]) async throws -> [Book] {
+        let (data, response) = try await provider.request(endpoint: .books(query: query))
+
+        // You can branch on status code before decoding.
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+
+        return try Self.decoder.decode([Book].self, from: data)
     }
 
-    /// Variant that exposes both the decoded payload and the HTTP response so
-    /// callers can read pagination headers or the raw status code while still
-    /// handling decoding failures non-fatally.
-    @available(macOS 12, *) @available(iOS 15, *)
-    func booksDetailed(query: [String: Any]) async throws -> NetworkAgent.Response<[Book]> {
-        try await provider.request(endpoint: .books(query: query))
+    func book(id: Int) async throws -> Book {
+        let (data, _) = try await provider.request(endpoint: .book(id: id))
+        return try Self.decoder.decode(Book.self, from: data)
     }
+
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+    }()
 }
 ```
-
-> **Tip:** when you need both the decoded model **and** the raw HTTP response (e.g., to read pagination headers), return the whole `Response<T>` instead of `.data`.
 
 ### 3. Consume from a ViewModel
 
 ```swift
-import Combine
+import Foundation
 
-final class LoginViewModel: ObservableObject {
-    @Published var email = ""
-    @Published var password = ""
+@MainActor
+final class BooksViewModel: ObservableObject {
+    @Published private(set) var books: [Book] = []
+    @Published private(set) var errorMessage: String?
 
-    private var cancellables = Set<AnyCancellable>()
-    private let repository = Repository.shared
+    private let repository: BooksRepository
 
-    func login(onSuccess: @escaping (Session) -> Void) {
-        repository.login(email: email, password: password)
-            .receive(on: DispatchQueue.main)
-            .sink(
-                receiveCompletion: { _ in },
-                receiveValue: onSuccess
-            )
-            .store(in: &cancellables)
+    init(repository: BooksRepository) {
+        self.repository = repository
+    }
+
+    func load() {
+        Task {
+            do {
+                books = try await repository.books(query: ["limit": 20, "offset": 0])
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }
 ```
 
+For a complete working example see `Examples/Pokedex/`.
+
 ---
 
-## Plugins
+## Plugins as Interceptors
 
-Plugins implement `NetworkAgentPlugin` to hook into the request/response lifecycle. Every method has a default empty implementation, so you only implement the ones you need.
+Plugins are the extension point for cross-cutting concerns (logging, auth, metrics, caching, retries). They're `Sendable`, async, and they can mutate the request or response.
+
+### Logging plugin
+
+The simplest plugin just observes and forwards the request/response unchanged. The pass-through defaults from the protocol mean you only need to implement the side you care about.
 
 ```swift
-public protocol NetworkAgentPlugin {
-    func onRequest(_ request: URLRequest, with configuration: RequestConfiguration)
-    func onResponse(_ response: HTTPURLResponse, with payload: Data, from endpoint: NetworkAgentEndpoint)
-    func onResponse(_ response: HTTPURLResponse?, with payload: Data?, receiving error: Error, from endpoint: NetworkAgentEndpoint)
+import Foundation
+import NetworkAgent
+
+struct AgentLogger: NetworkAgentPlugin {
+    func onRequest(
+        _ request: URLRequest,
+        endpoint: any NetworkAgentEndpoint
+    ) async throws -> URLRequest {
+        print("→", request.httpMethod ?? "?", request.url?.absoluteString ?? "")
+        return request
+    }
+
+    func onResponse(
+        _ response: URLResponse,
+        data: Data,
+        request: URLRequest,
+        endpoint: any NetworkAgentEndpoint,
+        agent: NetworkAgent
+    ) async throws -> (data: Data, response: URLResponse) {
+        if let http = response as? HTTPURLResponse {
+            print("←", http.statusCode, request.url?.absoluteString ?? "")
+        }
+        return (data: data, response: response)
+    }
+}
+
+let provider = NetworkAgentProvider<Api>(plugins: [AgentLogger()])
+```
+
+### Auth header injector
+
+`onRequest` returns the (possibly mutated) `URLRequest`. Anything you put on it is what URLSession actually sends.
+
+```swift
+struct AuthHeaderInjector: NetworkAgentPlugin {
+    let token: @Sendable () async -> String?
+
+    func onRequest(
+        _ request: URLRequest,
+        endpoint: any NetworkAgentEndpoint
+    ) async throws -> URLRequest {
+        guard let token = await token() else { return request }
+        var mutated = request
+        mutated.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return mutated
+    }
 }
 ```
 
-- `onRequest` – called right before the URLSession task is started.
-- `onResponse(_:with:from:)` – called on a successful decode.
-- `onResponse(_:with:receiving:from:)` – called when the transport fails (no response) or decoding fails. `response` and `payload` are both optional because some failures (e.g., `URLError.notConnectedToInternet`) happen before any response is received.
+### Token refresh via side-request from `onResponse`
 
-Plugins are registered when constructing the provider:
+This is the pattern the `agent` parameter on `onResponse` was designed for: when the response says the access token is stale, refresh it through a separate endpoint, then retry the original request. The retry uses `agent.request(_:)`, which **does not** re-run the plugin chain — that's the recursion guard, so this plugin can safely retry without infinitely re-entering itself.
 
 ```swift
-let provider = NetworkAgentProvider<Api>(plugins: [AgentLogger(options: [.verbose])])
+actor TokenStore {
+    private(set) var accessToken: String?
+    func update(_ token: String) { accessToken = token }
+}
+
+struct TokenRefresher: NetworkAgentPlugin {
+    let store: TokenStore
+
+    func onResponse(
+        _ response: URLResponse,
+        data: Data,
+        request: URLRequest,
+        endpoint: any NetworkAgentEndpoint,
+        agent: NetworkAgent
+    ) async throws -> (data: Data, response: URLResponse) {
+        guard
+            let http = response as? HTTPURLResponse,
+            http.statusCode == 401
+        else {
+            return (data: data, response: response)
+        }
+
+        // Side-request #1: refresh the token. No plugin chain re-entry.
+        let (refreshData, _) = try await agent.request(Api.refresh)
+        let refreshed = try JSONDecoder().decode(TokenResponse.self, from: refreshData)
+        await store.update(refreshed.accessToken)
+
+        // Side-request #2: retry the original endpoint with the new token in store.
+        // Again, no plugin chain re-entry — so make sure the side request can
+        // include whatever it needs (e.g. by reading the token from the store
+        // inside the endpoint's headers).
+        return try await agent.request(endpoint)
+    }
+}
 ```
 
-See `Examples/Plugins/AgentLogger.swift` for a worked example that logs requests, responses, and errors.
+Notes:
+
+- The `endpoint` parameter is the one the original call was made with — you can hand it straight back to `agent.request(_:)` for a retry.
+- The `request` parameter is the **final** `URLRequest` after every prior `onRequest` ran, which is useful if you want to inspect the exact request that was sent before refreshing.
+
+### Chain ordering
+
+Plugins are applied in the order you pass them. For each request:
+
+1. `onRequest` runs through every plugin in order; each one's output is the next one's input.
+2. URLSession fires the resulting `URLRequest`.
+3. `onResponse` runs through every plugin in the same order; each one's output is the next one's input.
+
+```swift
+let provider = NetworkAgentProvider<Api>(plugins: [
+    AuthHeaderInjector(token: { ... }),   // 1: adds Authorization header
+    AgentLogger(),                         // 2: logs the request that will actually be sent
+    TokenRefresher(store: tokenStore)      // 3: handles 401 by refreshing + retrying
+])
+```
 
 ---
 
 ## Multipart Uploads
 
-For `multipart/form-data` uploads, use `.upload(parts:)` with `HTTPMultipartTask` values:
+For `multipart/form-data` uploads, use `.upload(parts:)`:
 
 ```swift
-public struct HTTPMultipartTask {
-    public init(
-        data: Data,
-        name: String,
-        filename: String,
-        mymetype: String? = nil
-    )
+extension Api: NetworkAgentEndpoint {
+    var task: HTTPTask {
+        switch self {
+        case let .uploadAvatar(image):
+            return .upload(parts: [
+                HTTPMultipartTask(
+                    data: image,
+                    name: "avatar",
+                    filename: "avatar.png",
+                    mymetype: "image/png"
+                ),
+                HTTPMultipartTask(
+                    data: Data("public".utf8),
+                    name: "visibility"
+                )
+            ])
+        // ...
+        }
+    }
+
+    var headers: [String: String] {
+        ["Content-Type": "multipart/form-data"]
+    }
 }
 ```
 
-- If `mymetype` is `nil`, the part is treated as a plain form field (its `data` is interpreted as UTF-8 text).
-- If `mymetype` is set (e.g., `"image/png"`), the part is treated as a file upload with the supplied `filename` and `Content-Type`.
-
-A `Boundary-<UUID>` is generated per request and appended to the `Content-Type` header when the task is `.upload`. You do **not** need to set the boundary yourself in `headers`; just declare `"Content-Type": "multipart/form-data"` and the provider will append `; boundary=…`.
-
-```swift
-case let .uploadAvatar(image):
-    return .upload(parts: [
-        HTTPMultipartTask(
-            data: image,
-            name: "avatar",
-            filename: "avatar.png",
-            mymetype: "image/png"
-        ),
-        HTTPMultipartTask(
-            data: Data("public".utf8),
-            name: "visibility"
-        )
-    ])
-```
+The provider takes care of generating a boundary and appending it to the `Content-Type` header.
 
 ---
 
-## Caveats & Edge Cases
+## Notes & Gotchas
 
-These are behaviors worth knowing about. Some of them are intentional; others are simply how the library is implemented today.
+### No decoding in the library
 
-### `Response<T>` is the return type, not `T`
+`request(endpoint:)` returns `(Data, URLResponse)`. The library does **not** decode the body, run a `JSONDecoder`, unwrap envelopes, or apply key/date strategies. You decode at the call site (typically inside a repository). This keeps the library small and gives you complete control over decoding strategy per call.
 
-The most common gotcha after upgrading is forgetting to unwrap `.data`. If you write:
+### Status code is not checked
 
-```swift
-let posts = try await provider.request(endpoint: .posts) as [Post]
-```
+The library does not inspect the HTTP status code. A `404` with a `{}` body will return `(Data, URLResponse)` just like a `200`. Inspect `response as? HTTPURLResponse` yourself if you want to branch on status — or write a plugin that throws for non-2xx responses.
 
-you will see:
+### `request as? HTTPURLResponse`
 
-```
-Cannot convert value of type 'NetworkAgent.Response<T>' to type '[Post]' in coercion
-Generic parameter 'T' could not be inferred
-```
+The returned `URLResponse` is whatever URLSession produces. For HTTP/HTTPS calls it will always be an `HTTPURLResponse`, but the library doesn't force-cast it for you — read `response as? HTTPURLResponse` so non-HTTP URL schemes don't crash.
 
-Annotate the result explicitly and `get()` the `Result`:
+### Side-requests don't re-enter the plugin chain
 
-```swift
-let response: NetworkAgent.Response<[Post]> = try await provider.request(endpoint: .posts)
-let posts = try response.data.get()
-```
+Calling `agent.request(_:)` from inside `onResponse` bypasses every plugin (including the one calling it). This is intentional — it's the recursion guard that lets you implement "refresh-and-retry" without setting your own plugin on fire. If your retried request needs auth headers, either:
 
-### Decoding errors are not thrown anymore
+- read them in the endpoint's `headers` (e.g. from a token store actor), so they're applied when the agent builds the `URLRequest`, or
+- skip going through `agent.request(_:)` and call `provider.request(endpoint:)` from a different actor that knows to suppress the plugin during the retry.
 
-Previously a `DecodingError` from the body would be thrown from `request(...)`. Starting with this version:
+### `requestWithoutAttributes` is a no-op
 
-- **Transport errors** (DNS failure, no internet, request cancelled, invalid URL, etc.) still throw from `request(...)` because no `HTTPURLResponse` is available.
-- **Decoding errors** are captured into `Response.data` as `.failure(error)`. The call does **not** throw. This means a `do { try await provider.request(...) } catch { ... }` block will no longer catch malformed-JSON errors — they have to be observed through the returned `Result`.
+`HTTPTask.requestWithoutAttributes(content:)` is declared but the request builder does not serialise its `content`. Today this case behaves the same as `.requestPlain`. Use `.requestAttributes(...)` or `.upload(...)` for any payload you actually want to send.
 
-If you want the old "throw on any failure" behavior, simply chain `try response.data.get()`:
-
-```swift
-let response = try await provider.request(endpoint: .posts) as NetworkAgent.Response<[Post]>
-let posts = try response.data.get() // throws DecodingError if decoding failed
-```
-
-### Force-unwrapped HTTP response
-
-The agent assumes the `URLResponse` returned by `URLSession` can be cast to `HTTPURLResponse` (`response as! HTTPURLResponse`). For standard HTTP/HTTPS requests this is safe, but custom URL protocols or non-HTTP schemes will crash. Only use `NetworkAgent` for HTTP/HTTPS endpoints.
-
-### Decoding strategy differences between Combine and async/await
-
-There is currently a subtle asymmetry between the two transport implementations:
-
-- The **Combine** pipeline sets `decoder.keyDecodingStrategy = .convertFromSnakeCase` and a `DateFormatter`-based `dateDecodingStrategy` on every call.
-- The **async/await** pipeline uses the decoder you pass in (via `RequestConfiguration.decoder`) **without** mutating its strategies.
-
-If your async API returns snake_case JSON and you rely on auto-conversion, configure a decoder explicitly:
-
-```swift
-let decoder = JSONDecoder()
-decoder.keyDecodingStrategy = .convertFromSnakeCase
-
-let config = RequestConfiguration(decoder: decoder)
-let provider = NetworkAgentProvider<Api>(configuration: config)
-```
-
-### `RequestConfiguration.from` (envelope unwrapping) is Combine-only
-
-When `from` is set, the **Combine** pipeline calls `extractPayload(...)` to dig into the top-level JSON object and decode the nested value. The **async/await** pipeline does **not** apply this transformation today and decodes the full response body directly. If you need envelope unwrapping with `async`/`await`, either:
-
-- Model the envelope in your `Decodable` type (e.g., `struct Envelope<T: Decodable>: Decodable { let data: T }`), or
-- Pre-process the data before decoding.
-
-### `requestWithoutAttributes` is currently a no-op
-
-`HTTPTask.requestWithoutAttributes(content:)` is declared in the enum but not handled in the request builder. Choosing this case results in a request with no body. Use `.requestAttributes(...)` or `.upload(parts:)` for any payload you actually need to send.
-
-### URL encoding edge cases
+### URL encoding caveats
 
 For `.requestAttributes(attributes:, encoding: .url)`:
 
-- Values are converted to strings via Swift's default `String(describing:)`. Custom types may produce surprising query strings — pass primitives (`String`, `Int`, `Bool`, etc.) when possible.
-- The provider replaces `+` with `%2B` in the percent-encoded query to avoid the historical "+ means space" ambiguity on the server side.
-- Dictionary iteration order is **not** stable. If your server is sensitive to query parameter ordering (most aren't), do not rely on a particular order.
+- Values are stringified via `String(describing:)`. Pass primitives (`String`, `Int`, `Bool`, `Double`) for predictable query strings.
+- The provider replaces `+` with `%2B` in the percent-encoded query so servers do not interpret `+` as a space.
+- Dictionary iteration order is **not** stable. If your server is sensitive to query parameter ordering (most aren't), don't rely on a particular order.
 
-### `Combine` requests deliver on the main thread
+### Concurrency model
 
-The Combine `request(...)` pipeline ends with `.receive(on: DispatchQueue.main)`. This is convenient for direct UI binding but means downstream `map` / `tryMap` operators run on main. If you do heavy work, hop off main with `.receive(on:)` before that work and then back to main before assigning to `@Published` state.
-
-### Async/await runs wherever the caller's executor sends it
-
-Unlike Combine, `async`/`await` calls return on whatever actor / executor was active at the suspension point. If you need main-actor delivery, await the call from a `@MainActor`-isolated context or hop with `await MainActor.run { ... }` before touching UI state.
-
-### Empty / malformed responses surface as `DecodingError`
-
-The library doesn't inspect the HTTP status code before attempting to decode. A `404` that returns an empty object (`{}`) will be reported as `DecodingError.keyNotFound` for the first required field of your model. If you need to branch on status codes, inspect `response.response.statusCode` from the returned `Response<T>` — or, for non-2xx errors, implement a plugin and short-circuit there.
-
-### Plugin error reporting
-
-When decoding fails, plugins receive `onResponse(_:with:receiving:from:)` with the `HTTPURLResponse` **and** the raw `Data`. When the transport itself fails (no response), both arguments are `nil`. Plugins should handle the optional case (see `AgentLogger`).
-
-### Availability gates
-
-`async`/`await` overloads are gated by `@available(macOS 12, *) @available(iOS 15, *)`. Earlier OS targets must use the Combine API.
+The async API runs on whatever executor was active at the call site. If you need main-actor delivery for UI binding, call from a `@MainActor`-isolated context (e.g. a `@MainActor` ViewModel) — or hop with `await MainActor.run { ... }` before touching UI state.
 
 ---
 
 ## License
 
-See `LICENSE`.
+MIT — see [LICENSE](./LICENSE).

@@ -15,12 +15,12 @@ class MovesRepository {
         provider = agent
     }
 
-    func index<T: Decodable>(query: [String: Any]) async throws -> T {
+    func index<T: Decodable>(query: [String: any Sendable]) async throws -> T {
         let (data, _) = try await provider.request(endpoint: .moves(query: query))
         return try Self.decoder.decode(T.self, from: data)
     }
 
-    func show(id: Int, query: [String: Any]) async throws -> Move {
+    func show(id: Int, query: [String: any Sendable]) async throws -> Move {
         let (data, _) = try await provider.request(endpoint: .move(id: id, query: query))
         return try Self.decoder.decode(Move.self, from: data)
     }

@@ -7,14 +7,14 @@
 
 import Foundation
 
-public struct HTTPMultipartTask {
+public struct HTTPMultipartTask: Sendable {
     var data: Data
     var name: String
     var filename: String
     var mymetype: String?
 //    var mymetype: MymeType? = nil
     
-    public enum MymeType {
+    public enum MymeType: Sendable {
         case png
         case jpg
         case raw(_ type: String)

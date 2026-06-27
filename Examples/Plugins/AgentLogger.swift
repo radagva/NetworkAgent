@@ -26,7 +26,10 @@ class AgentLogger: NetworkAgentPlugin {
     }
 
     // Request interceptor
-    func onRequest(_ request: URLRequest) async throws -> URLRequest {
+    func onRequest(
+        _ request: URLRequest,
+        endpoint: any NetworkAgentEndpoint
+    ) async throws -> URLRequest {
         if options.contains(.requests) || options.contains(.verbose) {
             printFormatting(label: "URL", "\(String(describing: request.url))")
             printFormatting(label: "HEADERS", "\(String(describing: request.allHTTPHeaderFields))")
@@ -46,7 +49,9 @@ class AgentLogger: NetworkAgentPlugin {
     func onResponse(
         _ response: URLResponse,
         data: Data,
-        request: URLRequest
+        request: URLRequest,
+        endpoint: any NetworkAgentEndpoint,
+        agent: NetworkAgent
     ) async throws -> (data: Data, response: URLResponse) {
         if options.contains(.responses) || options.contains(.verbose) {
             if let httpResponse = response as? HTTPURLResponse {
